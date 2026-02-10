@@ -163,6 +163,7 @@ func (c *Client) writeUdpPacket(ctx context.Context) {
 		select {
 		case packet := <-c.dataChan:
 			_, err := c.hub.UdpConn.WriteToUDP(packet, c.dataAddr)
+			log.Printf("发送数据 TO %s -- %s", c.virtualIp.String(), c.dataAddr.String())
 			if err != nil {
 				log.Println(err)
 				continue
@@ -174,6 +175,8 @@ func (c *Client) writeUdpPacket(ctx context.Context) {
 }
 
 func (c *Client) updateAddr(addr *net.UDPAddr) {
+	c.hub.mtx.Lock()
+	defer c.hub.mtx.Unlock()
 	c.dataAddr = addr
 }
 
@@ -203,6 +206,8 @@ func (h *Hub) serverWS(ctx context.Context, w http.ResponseWriter, r *http.Reque
 	// 启动该用户的读写协程
 	go client.writePump(newCtx, cancel) // WS 写
 	go client.readPump(newCtx, cancel)  // WS 读
+
+	go client.writeUdpPacket(newCtx)
 	select {
 	case <-newCtx.Done():
 		log.Printf("断开 %s 连接\n", client.virtualIp.String())
@@ -280,6 +285,17 @@ func (h *Hub) transfer(ctx context.Context) {
 		select {
 		case tp := <-h.transferChan:
 			dst := tp.gp.Destination()
+			src := tp.gp.SourceVirtualIp()
+			h.mtx.RLock()
+			srcClient, ok := h.Router[src.String()]
+			if ok {
+				if srcClient.dataAddr == nil || srcClient.dataAddr.IP.Equal(src) {
+					h.mtx.RUnlock()
+					srcClient.updateAddr(tp.srcAddr)
+					h.mtx.RLock()
+				}
+			}
+			h.mtx.RUnlock()
 			switch {
 			case dst.Equal(net.IPv4bcast) || dst.To4()[3] == 255 || dst.IsMulticast():
 				// 广播
@@ -288,10 +304,10 @@ func (h *Hub) transfer(ctx context.Context) {
 				h.mtx.RLock()
 				client, ok := h.Router[dst.String()]
 				if ok {
-					_, err := h.UdpConn.WriteToUDP(tp.gp.Encode(), client.dataAddr)
-					if err != nil {
-						log.Println(err)
-						break
+					select {
+					case client.dataChan <- tp.gp.Encode():
+					case <-ctx.Done():
+						return
 					}
 				}
 				h.mtx.RUnlock()

@@ -139,8 +139,15 @@ func (t *Tun) tunSend(ctx context.Context) {
 		select {
 		case payload := <-t.fromNet:
 			if len(payload) > 0 {
-				t.session.SendPacket(payload)
+				packetBuffer, err := t.session.AllocateSendPacket(len(payload))
+				if err == nil {
+					copy(packetBuffer, payload)
+					t.session.SendPacket(packetBuffer)
+				} else {
+					log.Printf("Wintun Allocate 失败: %v", err)
+				}
 			}
+
 		case <-ctx.Done():
 			return
 		}
