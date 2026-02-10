@@ -5,20 +5,24 @@ import (
 	"encoding/binary"
 	"game_tun/internal/errorcode"
 	"log"
+	"net"
 )
 
 const (
 	TypeHandshake = iota + 1
-	TypeKeepAlive
+	TypePing
+	TypePong
 	TypeData
 )
 
 const MagicNumber = 0xDAAA
 
+const HeaderLength = 13
+
 type GamePacket struct {
 	src     [4]byte
 	dst     [4]byte
-	pType   uint8
+	PType   uint8
 	Payload []byte
 	Length  uint16
 }
@@ -33,7 +37,7 @@ func NewGamePacket(src, dst [4]byte, pType uint8, payload []byte) *GamePacket {
 	return &GamePacket{
 		src:     src,
 		dst:     dst,
-		pType:   pType,
+		PType:   pType,
 		Payload: payload,
 	}
 }
@@ -51,7 +55,7 @@ func (g *GamePacket) Encode() []byte {
 		log.Println(err)
 		return nil
 	}
-	if err := binary.Write(buf, binary.BigEndian, g.pType); err != nil {
+	if err := binary.Write(buf, binary.BigEndian, g.PType); err != nil {
 		log.Println(err)
 		return nil
 	}
@@ -77,10 +81,10 @@ func (g *GamePacket) Encode() []byte {
 	return buf.Bytes()
 }
 
-func (g *GamePacket) ParseHead(data []byte) error {
+func (g *GamePacket) Parse(data []byte, control bool) error {
 	var magic uint16
 
-	if len(data) < 13 {
+	if len(data) < HeaderLength {
 		return errorcode.PacketTooShort
 	}
 	reader := bytes.NewReader(data)
@@ -91,7 +95,7 @@ func (g *GamePacket) ParseHead(data []byte) error {
 	if magic != MagicNumber {
 		return errorcode.InvalidMagic
 	}
-	if err := binary.Read(reader, binary.BigEndian, &g.pType); err != nil {
+	if err := binary.Read(reader, binary.BigEndian, &g.PType); err != nil {
 		return err
 	}
 	if err := binary.Read(reader, binary.BigEndian, &g.src); err != nil {
@@ -103,5 +107,20 @@ func (g *GamePacket) ParseHead(data []byte) error {
 	if err := binary.Read(reader, binary.BigEndian, &g.Length); err != nil {
 		return err
 	}
+	if control {
+		var payload []byte
+		if g.Length > 0 {
+			if int(g.Length) > reader.Len() {
+				return errorcode.PayloadMismatch
+			}
+			payload = make([]byte, int(g.Length))
+			reader.Read(payload)
+			g.Payload = payload
+		}
+	}
 	return nil
+}
+
+func (g *GamePacket) Destination() net.IP {
+	return net.IPv4(g.dst[0], g.dst[1], g.dst[2], g.dst[3])
 }
