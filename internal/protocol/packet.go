@@ -124,3 +124,7 @@ func (g *GamePacket) Parse(data []byte, control bool) error {
 func (g *GamePacket) Destination() net.IP {
 	return net.IPv4(g.dst[0], g.dst[1], g.dst[2], g.dst[3])
 }
+
+func (g *GamePacket) SourceVirtualIp() net.IP {
+	return net.IPv4(g.src[0], g.src[1], g.src[2], g.src[3])
+}
