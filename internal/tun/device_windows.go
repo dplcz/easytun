@@ -109,6 +109,7 @@ func (t *Tun) tunRecv(ctx context.Context) {
 					dstIp := net.IP(packet[16:20])
 
 					if dstIp.Equal(net.IPv4bcast) || dstIp[3] == 255 || dstIp.IsMulticast() || (t.Subnet.Contains(dstIp) && !dstIp.IsLoopback()) {
+						// TODO 使用对象池
 						payloadCopy := make([]byte, len(packet))
 						copy(payloadCopy, packet)
 						select {
