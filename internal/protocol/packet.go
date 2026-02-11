@@ -81,7 +81,7 @@ func (g *GamePacket) Encode() []byte {
 	return buf.Bytes()
 }
 
-func (g *GamePacket) Parse(data []byte, control bool) error {
+func (g *GamePacket) Parse(data []byte, parsePayload bool) error {
 	var magic uint16
 
 	if len(data) < HeaderLength {
@@ -107,7 +107,7 @@ func (g *GamePacket) Parse(data []byte, control bool) error {
 	if err := binary.Read(reader, binary.BigEndian, &g.Length); err != nil {
 		return err
 	}
-	if control {
+	if parsePayload {
 		var payload []byte
 		if g.Length > 0 {
 			if int(g.Length) > reader.Len() {

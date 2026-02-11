@@ -50,8 +50,9 @@ type Hub struct {
 
 	Router map[string]*Client
 	mtx    sync.RWMutex
-	// TODO 可能要加锁
-	IpBitMap map[uint8]struct{}
+
+	ipMtx    sync.Mutex
+	ipBitMap map[uint8]struct{}
 
 	Subnet *net.IPNet
 }
@@ -78,7 +79,8 @@ func NewHub() *Hub {
 		transferChan: make(chan *transferPacket, 64),
 		Router:       make(map[string]*Client),
 		mtx:          sync.RWMutex{},
-		IpBitMap:     make(map[uint8]struct{}),
+		ipMtx:        sync.Mutex{},
+		ipBitMap:     make(map[uint8]struct{}),
 		Subnet:       subnet,
 	}
 }
@@ -208,7 +210,9 @@ func (h *Hub) serverWS(ctx context.Context, w http.ResponseWriter, r *http.Reque
 	}
 
 	// 创建新用户实例
+	h.ipMtx.Lock()
 	ip := h.getIp()
+	h.ipMtx.Unlock()
 	client := newClient(h, conn, nil, ip)
 	newCtx, cancel := context.WithCancel(ctx)
 	// 启动该用户的读写协程
@@ -219,8 +223,10 @@ func (h *Hub) serverWS(ctx context.Context, w http.ResponseWriter, r *http.Reque
 	select {
 	case <-newCtx.Done():
 		log.Printf("断开 %s 连接\n", client.virtualIp.String())
-		delete(h.IpBitMap, client.virtualIp[3])
+		h.ipMtx.Lock()
+		delete(h.ipBitMap, client.virtualIp[3])
 		delete(h.Router, client.virtualIp.String())
+		h.ipMtx.Unlock()
 		return
 	}
 }
@@ -251,7 +257,6 @@ func (h *Hub) listenUdp(ctx context.Context) {
 	h.UdpConn = conn
 	go h.transfer(ctx)
 	buf := make([]byte, 2048)
-	gp := &protocol.GamePacket{}
 	log.Println("开始监听UDP...")
 	for ctx.Err() == nil {
 		h.UdpConn.SetReadDeadline(time.Now().Add(config.ReadTimeout * time.Second))
@@ -264,7 +269,10 @@ func (h *Hub) listenUdp(ctx context.Context) {
 			log.Println(err)
 			continue
 		}
-		err = gp.Parse(buf[:cnt], true)
+		copyData := make([]byte, cnt)
+		copy(copyData, buf[:cnt])
+		gp := &protocol.GamePacket{}
+		err = gp.Parse(copyData, true)
 		if err != nil {
 			log.Println(err)
 			continue
@@ -328,7 +336,6 @@ func (h *Hub) transfer(ctx context.Context) {
 					default:
 					}
 				}
-				h.mtx.RUnlock()
 			}
 		case <-ctx.Done():
 			return
@@ -339,18 +346,18 @@ func (h *Hub) transfer(ctx context.Context) {
 func (h *Hub) getIp() net.IP {
 	idx := uint8(rand.Uint()%250 + 2)
 	skip := uint8(1)
-	_, ok := h.IpBitMap[idx]
+	_, ok := h.ipBitMap[idx]
 	if !ok {
-		h.IpBitMap[idx] = struct{}{}
+		h.ipBitMap[idx] = struct{}{}
 		return net.IPv4(10, 0, 6, idx)
 	}
 	for {
 		idx = (idx+skip)%250 + 2
-		_, ok = h.IpBitMap[idx+skip]
+		_, ok = h.ipBitMap[idx+skip]
 		if !ok {
-			h.IpBitMap[idx] = struct{}{}
+			h.ipBitMap[idx] = struct{}{}
 			return net.IPv4(10, 0, 6, idx)
 		}
-		skip *= 2
+		skip++
 	}
 }
