@@ -4,12 +4,13 @@ package util
 
 import (
 	"game_tun/internal/config"
+	"game_tun/internal/tun"
 	"log"
 )
 
 func InitAll() {
 	config.InitConfig()
-	err := InitWintunDLL()
+	err := tun.InitWintunDLL()
 	if err != nil {
 		log.Fatal(err)
 	}

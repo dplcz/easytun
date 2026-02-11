@@ -1,6 +1,6 @@
 //go:build client
 
-package util
+package tun
 
 import (
 	_ "embed"
