@@ -63,7 +63,7 @@ func NewTransport() *ClientTransport {
 		ControlRecvChan: controlRecvChan,
 		ControlSendChan: controlSendChan,
 		bufPool: &sync.Pool{New: func() interface{} {
-			return make([]byte, 2048)
+			return make([]byte, 4*1024*1024)
 		}},
 	}
 
@@ -96,6 +96,8 @@ func (t *ClientTransport) connectServer() error {
 	serverAddr, _ := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", config.ServerIp, config.ServerPort))
 	t.serverAddr = serverAddr
 	conn, err := net.DialUDP("udp", nil, serverAddr)
+	conn.SetReadBuffer(4 * 1024 * 1024)
+	conn.SetWriteBuffer(4 * 1024 * 1024)
 	if err != nil {
 		return err
 	}
@@ -254,7 +256,7 @@ func (t *ClientTransport) packetSend(ctx context.Context) {
 
 // packetRecv 接收并解包
 func (t *ClientTransport) packetRecv(ctx context.Context) {
-	buffer := make([]byte, 2048)
+	buffer := make([]byte, 4*1024*1024)
 	for ctx.Err() == nil {
 		t.dataConn.SetReadDeadline(time.Now().Add(time.Second * config.ReadTimeout))
 		cnt, addr, err := t.dataConn.ReadFromUDP(buffer)
@@ -275,7 +277,7 @@ func (t *ClientTransport) packetRecv(ctx context.Context) {
 				log.Println(err)
 				continue
 			}
-			log.Printf("收到 %s 的消息\n", gp.SourceVirtualIp())
+			//log.Printf("收到 %s 的消息\n", gp.SourceVirtualIp())
 			packetEnd := protocol.HeaderLength + gp.Length
 			if cnt < int(packetEnd) {
 				log.Println(errorcode.PayloadMismatch)
@@ -285,6 +287,8 @@ func (t *ClientTransport) packetRecv(ctx context.Context) {
 			case t.FromNet <- dataCopy[protocol.HeaderLength:packetEnd]:
 			case <-ctx.Done():
 				return
+			default:
+				log.Println("FromNet 已满")
 			}
 		}
 	}

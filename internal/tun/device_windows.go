@@ -47,6 +47,11 @@ func NewTun(name string, ipByte []byte, toNet, fromNet chan []byte, bufPool *syn
 		panic(fmt.Sprintf("配置 IP 失败: %v, Output: %s", err, string(output)))
 	}
 	log.Printf("配置ip成功! 当前虚拟ip为: %s \n", ip.String())
+	cmd = exec.Command("netsh", "interface", "ipv4", "set", "subinterface", name, "mtu=1280", "store=persistent")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		panic(fmt.Sprintf("配置 IP 失败: %v, Output: %s", err, string(output)))
+	}
+	log.Printf("配置mtu成功! \n")
 	cmdStr := fmt.Sprintf("Set-NetConnectionProfile -InterfaceAlias '%s' -NetworkCategory Private", name)
 	cmd = exec.Command("powershell", "-Command", cmdStr)
 	if output, err := cmd.CombinedOutput(); err != nil {
@@ -98,7 +103,7 @@ func (t *Tun) Name() string {
 	return t.DeviceName
 }
 
-// tunRecv 从tun接收数据并封包
+// tunRecv 从tun接收数据
 func (t *Tun) tunRecv(ctx context.Context) {
 	waitEvent := t.session.ReadWaitEvent()
 	for {
@@ -120,11 +125,15 @@ func (t *Tun) tunRecv(ctx context.Context) {
 
 					if dstIp.Equal(net.IPv4bcast) || dstIp[3] == 255 || dstIp.IsMulticast() || (t.Subnet.Contains(dstIp) && !dstIp.IsLoopback()) {
 						buf := t.bufPool.Get().([]byte)
+						buf = buf[:cap(buf)]
 						copy(buf, packet)
 						select {
 						case t.toNet <- buf[:len(packet)]:
 						case <-ctx.Done():
 							return
+						default:
+							t.bufPool.Put(buf)
+							log.Println("toNet 已满")
 						}
 					}
 
@@ -145,19 +154,35 @@ func (t *Tun) tunRecv(ctx context.Context) {
 
 // tunSend 处理接收的包并转发给tun
 func (t *Tun) tunSend(ctx context.Context) {
+	batchSize := 16
+	payloadBatch := make([][]byte, 0, batchSize)
 	for {
 		select {
 		case payload := <-t.fromNet:
 			if len(payload) > 0 {
-				packetBuffer, err := t.session.AllocateSendPacket(len(payload))
+				payloadBatch = append(payloadBatch, payload)
+			DrainLoop:
+				for len(payloadBatch) < batchSize {
+					select {
+					case extraPacket := <-t.fromNet:
+						if len(payload) > 0 {
+							payloadBatch = append(payloadBatch, extraPacket)
+						}
+					default:
+						break DrainLoop
+					}
+				}
+			}
+			for _, p := range payloadBatch {
+				packetBuffer, err := t.session.AllocateSendPacket(len(p))
 				if err == nil {
-					copy(packetBuffer, payload)
+					copy(packetBuffer, p)
 					t.session.SendPacket(packetBuffer)
 				} else {
 					log.Printf("Wintun Allocate 失败: %v", err)
 				}
 			}
-
+			payloadBatch = payloadBatch[:0]
 		case <-ctx.Done():
 			return
 		}
