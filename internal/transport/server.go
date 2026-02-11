@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -30,7 +31,7 @@ type Client struct {
 	controlConn *websocket.Conn
 	controlChan chan *protocol.GamePacket
 
-	dataAddr *net.UDPAddr
+	dataAddr atomic.Pointer[net.UDPAddr]
 	dataChan chan []byte
 
 	virtualIp net.IP
@@ -56,14 +57,15 @@ type Hub struct {
 }
 
 func newClient(hub *Hub, controlConn *websocket.Conn, dataAddr *net.UDPAddr, virtualIp net.IP) *Client {
-	return &Client{
+	client := &Client{
 		hub:         hub,
 		controlConn: controlConn,
 		controlChan: make(chan *protocol.GamePacket, 16),
-		dataAddr:    dataAddr,
 		dataChan:    make(chan []byte, 32),
 		virtualIp:   virtualIp,
 	}
+	client.dataAddr.Store(dataAddr)
+	return client
 }
 
 func NewHub() *Hub {
@@ -115,7 +117,6 @@ func (c *Client) readPump(ctx context.Context, cancel context.CancelFunc) {
 	pongGp := protocol.NewGamePacket([4]byte{}, [4]byte{}, protocol.TypePong, nil)
 	c.controlConn.SetPingHandler(func(string) error {
 		c.controlConn.SetReadDeadline(time.Now().Add(config.ReadTimeout * time.Second * 3))
-		log.Printf("收到 %s ping\n", c.virtualIp.String())
 		c.controlChan <- pongGp
 		return nil
 	})
@@ -162,8 +163,12 @@ func (c *Client) writeUdpPacket(ctx context.Context) {
 	for {
 		select {
 		case packet := <-c.dataChan:
-			_, err := c.hub.UdpConn.WriteToUDP(packet, c.dataAddr)
-			log.Printf("发送数据 TO %s -- %s", c.virtualIp.String(), c.dataAddr.String())
+			targetAddr := c.dataAddr.Load()
+			if targetAddr == nil {
+				continue
+			}
+			_, err := c.hub.UdpConn.WriteToUDP(packet, targetAddr)
+			log.Printf("发送数据 TO %s -- %s", c.virtualIp.String(), targetAddr)
 			if err != nil {
 				log.Println(err)
 				continue
@@ -174,10 +179,12 @@ func (c *Client) writeUdpPacket(ctx context.Context) {
 	}
 }
 
-func (c *Client) updateAddr(addr *net.UDPAddr) {
-	c.hub.mtx.Lock()
-	defer c.hub.mtx.Unlock()
-	c.dataAddr = addr
+func (c *Client) updateAddrCheck(addr *net.UDPAddr) {
+	oldAddr := c.dataAddr.Load()
+	if oldAddr == nil || !oldAddr.IP.Equal(addr.IP) {
+		log.Printf("%s 地址 %s 更改为 %s\n", c.virtualIp.String(), oldAddr.String(), addr.String())
+		c.dataAddr.Store(addr)
+	}
 }
 
 func (h *Hub) Run(ctx context.Context) {
@@ -290,26 +297,35 @@ func (h *Hub) transfer(ctx context.Context) {
 			src := tp.gp.SourceVirtualIp()
 			h.mtx.RLock()
 			srcClient, ok := h.Router[src.String()]
-			if ok {
-				if srcClient.dataAddr == nil || srcClient.dataAddr.IP.Equal(src) {
-					h.mtx.RUnlock()
-					srcClient.updateAddr(tp.srcAddr)
-					h.mtx.RLock()
-				}
-			}
 			h.mtx.RUnlock()
+			if ok {
+				srcClient.updateAddrCheck(tp.srcAddr)
+			}
 			switch {
 			case dst.Equal(net.IPv4bcast) || dst.To4()[3] == 255 || dst.IsMulticast():
-				// 广播
-				//log.Println("广播")
+				h.mtx.RLock()
+				for virtualIp, client := range h.Router {
+					if virtualIp == src.String() {
+						continue
+					}
+					select {
+					case client.dataChan <- tp.gp.Encode():
+					case <-ctx.Done():
+						return
+					default:
+					}
+				}
+				h.mtx.RUnlock()
 			case h.Subnet.Contains(dst) && !dst.IsLoopback():
 				h.mtx.RLock()
 				client, ok := h.Router[dst.String()]
+				h.mtx.RUnlock()
 				if ok {
 					select {
 					case client.dataChan <- tp.gp.Encode():
 					case <-ctx.Done():
 						return
+					default:
 					}
 				}
 				h.mtx.RUnlock()
@@ -318,7 +334,6 @@ func (h *Hub) transfer(ctx context.Context) {
 			return
 		}
 	}
-
 }
 
 func (h *Hub) getIp() net.IP {
