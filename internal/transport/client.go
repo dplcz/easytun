@@ -1,6 +1,9 @@
+//go:build client
+
 package transport
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -8,8 +11,11 @@ import (
 	"game_tun/internal/errorcode"
 	"game_tun/internal/protocol"
 	"game_tun/internal/tun"
+	"game_tun/internal/util"
 	"log"
 	"net"
+	"os"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -35,6 +41,18 @@ type ClientTransport struct {
 }
 
 func NewTransport() *ClientTransport {
+	defer func() {
+		if err := recover(); err != nil {
+			fmt.Fprintf(os.Stderr, "\n--- Panic ---\n")
+			fmt.Fprintf(os.Stderr, "错误详情: %v\n\n", err)
+			debug.PrintStack()
+
+			fmt.Println("程序已崩溃。按 [回车键] 退出...")
+			bufio.NewReader(os.Stdin).ReadString('\n')
+			os.Exit(1)
+		}
+	}()
+
 	outerChan := make(chan []byte, 64)
 	innerChan := make(chan []byte, 64)
 	controlRecvChan := make(chan *protocol.GamePacket, 16)
@@ -48,13 +66,14 @@ func NewTransport() *ClientTransport {
 			return make([]byte, 2048)
 		}},
 	}
+
 	err := t.connectServer()
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
 	handshake, err := t.handshake()
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
 	t.localIp = handshake.Payload[:4]
 	device := tun.NewTun(config.DeviceName, t.localIp, outerChan, innerChan, t.bufPool)
@@ -64,14 +83,17 @@ func NewTransport() *ClientTransport {
 
 // connectServer 创建连接
 func (t *ClientTransport) connectServer() error {
-	wsUrl := fmt.Sprintf("ws://%s:%d/ws", config.SeverIp, config.SeverPort)
+	rtt, loss := util.TestPing(config.ServerIp)
+	log.Printf("与服务器延迟为 %v , 丢包率为 %v%%\n", rtt, loss)
+
+	wsUrl := fmt.Sprintf("ws://%s:%d/ws", config.ServerIp, config.ServerPort)
 	tempControlConn, _, err := websocket.DefaultDialer.Dial(wsUrl, nil)
 	if err != nil {
 		return err
 	}
 	t.controlConn = tempControlConn
 
-	serverAddr, _ := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", config.SeverIp, config.SeverPort))
+	serverAddr, _ := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", config.ServerIp, config.ServerPort))
 	t.serverAddr = serverAddr
 	conn, err := net.DialUDP("udp", nil, serverAddr)
 	if err != nil {
@@ -251,6 +273,7 @@ func (t *ClientTransport) packetRecv(ctx context.Context) {
 				log.Println(err)
 				continue
 			}
+			log.Printf("收到 %s 的消息\n", gp.SourceVirtualIp())
 			packetEnd := protocol.HeaderLength + gp.Length
 			if cnt < int(packetEnd) {
 				log.Println(errorcode.PayloadMismatch)
