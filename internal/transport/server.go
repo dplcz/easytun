@@ -66,7 +66,7 @@ func newClient(hub *Hub, controlConn *websocket.Conn, dataAddr *net.UDPAddr, vir
 	}
 }
 
-func newHub() *Hub {
+func NewHub() *Hub {
 	subnet := &net.IPNet{
 		IP:   net.IPv4(10, 0, 6, 1),
 		Mask: net.IPv4Mask(255, 255, 255, 0),
@@ -185,6 +185,7 @@ func (h *Hub) Run(ctx context.Context) {
 		h.serverWS(ctx, w, r)
 	})
 	go h.listenUdp(ctx)
+	log.Printf("开始监听WS... 端口:%d", config.SeverPort)
 	err := http.ListenAndServe(fmt.Sprintf(":%d", config.SeverPort), nil)
 	if err != nil {
 		log.Fatalf("HTTP 服务启动失败: %v", err)
@@ -244,6 +245,7 @@ func (h *Hub) listenUdp(ctx context.Context) {
 	go h.transfer(ctx)
 	buf := make([]byte, 2048)
 	gp := &protocol.GamePacket{}
+	log.Println("开始监听UDP...")
 	for ctx.Err() == nil {
 		h.UdpConn.SetReadDeadline(time.Now().Add(config.ReadTimeout * time.Second))
 		cnt, clientAddr, err := h.UdpConn.ReadFromUDP(buf)

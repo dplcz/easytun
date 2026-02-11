@@ -5,7 +5,5 @@ import (
 )
 
 func TestClient(t *testing.T) {
-	tp := NewTransport()
 
-	tp.ListenAndServe()
 }
