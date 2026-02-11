@@ -7,6 +7,7 @@ import (
 	"game_tun/internal/config"
 	"game_tun/internal/errorcode"
 	"game_tun/internal/protocol"
+	"golang.org/x/net/ipv4"
 	"log"
 	"math/rand/v2"
 	"net"
@@ -43,7 +44,8 @@ type transferPacket struct {
 }
 
 type Hub struct {
-	UdpConn *net.UDPConn
+	PacketConn *ipv4.PacketConn
+	UdpConn    *net.UDPConn
 
 	controlChan  chan *protocol.GamePacket
 	transferChan chan *transferPacket
@@ -62,7 +64,7 @@ func newClient(hub *Hub, controlConn *websocket.Conn, dataAddr *net.UDPAddr, vir
 		hub:         hub,
 		controlConn: controlConn,
 		controlChan: make(chan *protocol.GamePacket, 16),
-		dataChan:    make(chan []byte, 32),
+		dataChan:    make(chan []byte, 128),
 		virtualIp:   virtualIp,
 	}
 	client.dataAddr.Store(dataAddr)
@@ -162,19 +164,37 @@ func (c *Client) readPump(ctx context.Context, cancel context.CancelFunc) {
 }
 
 func (c *Client) writeUdpPacket(ctx context.Context) {
+	batchSize := 128
+	msgs := make([]ipv4.Message, batchSize)
+	packetBatch := make([][]byte, 0, batchSize)
 	for {
 		select {
 		case packet := <-c.dataChan:
+			packetBatch = append(packetBatch, packet)
+		DrainLoop:
+			for len(packetBatch) < batchSize {
+				select {
+				case extraPacket := <-c.dataChan:
+					packetBatch = append(packetBatch, extraPacket)
+				default:
+					break DrainLoop
+				}
+			}
+
 			targetAddr := c.dataAddr.Load()
 			if targetAddr == nil {
 				continue
 			}
-			_, err := c.hub.UdpConn.WriteToUDP(packet, targetAddr)
-			log.Printf("发送数据 TO %s -- %s", c.virtualIp.String(), targetAddr)
+			for i, p := range packetBatch {
+				msgs[i].Buffers = [][]byte{p} // 设置数据
+				msgs[i].Addr = targetAddr     // 设置目标地址
+			}
+			_, err := c.hub.PacketConn.WriteBatch(msgs[:len(packetBatch)], 0)
 			if err != nil {
 				log.Println(err)
-				continue
 			}
+
+			packetBatch = packetBatch[:0]
 		case <-ctx.Done():
 			return
 		}
@@ -254,9 +274,13 @@ func (h *Hub) listenUdp(ctx context.Context) {
 	if err != nil {
 		log.Fatalf("UDP 监听失败: %v", err)
 	}
+	conn.SetReadBuffer(4 * 1024 * 1024)  // 4MB
+	conn.SetWriteBuffer(4 * 1024 * 1024) // 4MB
+
+	h.PacketConn = ipv4.NewPacketConn(conn)
 	h.UdpConn = conn
 	go h.transfer(ctx)
-	buf := make([]byte, 2048)
+	buf := make([]byte, 4*1024*1024)
 	log.Println("开始监听UDP...")
 	for ctx.Err() == nil {
 		h.UdpConn.SetReadDeadline(time.Now().Add(config.ReadTimeout * time.Second))
@@ -293,6 +317,8 @@ func (h *Hub) listenUdp(ctx context.Context) {
 		case h.transferChan <- tp:
 		case <-ctx.Done():
 			return
+		default:
+			log.Println("transferChan已满")
 		}
 	}
 }
@@ -334,6 +360,7 @@ func (h *Hub) transfer(ctx context.Context) {
 					case <-ctx.Done():
 						return
 					default:
+						log.Println("dataChan已满")
 					}
 				}
 			}
