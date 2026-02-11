@@ -268,7 +268,9 @@ func (t *ClientTransport) packetRecv(ctx context.Context) {
 		}
 		if addr.IP.Equal(t.serverAddr.IP) && addr.Port == t.serverAddr.Port {
 			gp := &protocol.GamePacket{}
-			err = gp.Parse(buffer[:cnt], false)
+			dataCopy := make([]byte, cnt)
+			copy(dataCopy, buffer[:cnt])
+			err = gp.Parse(dataCopy, false)
 			if err != nil {
 				log.Println(err)
 				continue
@@ -279,10 +281,8 @@ func (t *ClientTransport) packetRecv(ctx context.Context) {
 				log.Println(errorcode.PayloadMismatch)
 				continue
 			}
-			dataCopy := make([]byte, gp.Length)
-			copy(dataCopy, buffer[protocol.HeaderLength:packetEnd])
 			select {
-			case t.FromNet <- dataCopy:
+			case t.FromNet <- dataCopy[protocol.HeaderLength:packetEnd]:
 			case <-ctx.Done():
 				return
 			}
