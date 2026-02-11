@@ -31,6 +31,7 @@ type ClientTransport struct {
 	serverAddr  *net.UDPAddr
 
 	localIp net.IP
+	bufPool *sync.Pool
 }
 
 func NewTransport() *ClientTransport {
@@ -43,6 +44,9 @@ func NewTransport() *ClientTransport {
 		FromNet:         innerChan,
 		ControlRecvChan: controlRecvChan,
 		ControlSendChan: controlSendChan,
+		bufPool: &sync.Pool{New: func() interface{} {
+			return make([]byte, 2048)
+		}},
 	}
 	err := t.connectServer()
 	if err != nil {
@@ -53,7 +57,7 @@ func NewTransport() *ClientTransport {
 		log.Fatal(err)
 	}
 	t.localIp = handshake.Payload[:4]
-	device := tun.NewTun(config.DeviceName, t.localIp, outerChan, innerChan)
+	device := tun.NewTun(config.DeviceName, t.localIp, outerChan, innerChan, t.bufPool)
 	t.device = device
 	return t
 }
@@ -215,6 +219,7 @@ func (t *ClientTransport) packetSend(ctx context.Context) {
 			dstIp := net.IP(packet[16:20])
 			gp := protocol.NewGamePacket([4]byte(t.localIp), [4]byte(dstIp), protocol.TypeData, packet)
 			_, err := t.dataConn.Write(gp.Encode())
+			t.bufPool.Put(packet)
 			if err != nil {
 				log.Println(err)
 				continue

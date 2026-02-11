@@ -1,13 +1,13 @@
-package transport
+package main
 
 import (
 	"context"
 	"game_tun/internal/config"
-	"testing"
+	"game_tun/internal/transport"
 )
 
-func TestServer(t *testing.T) {
+func main() {
 	config.InitConfig()
-	hub := NewHub()
+	hub := transport.NewHub()
 	hub.Run(context.Background())
 }

@@ -1,6 +1,10 @@
 package config
 
 import (
+	"bytes"
+	"encoding/json"
+	"game_tun/assets"
+	"log"
 	"time"
 )
 
@@ -10,10 +14,25 @@ var DeviceName string
 var ReadTimeout time.Duration
 var PingTime time.Duration
 
-func init() {
-	SeverIp = "127.0.0.1"
-	SeverPort = 8080
-	DeviceName = "default"
-	ReadTimeout = 5
-	PingTime = 1
+type Configuration struct {
+	ServerIp    string        `json:"server_ip"`
+	ServerPort  int           `json:"server_port"`
+	DeviceName  string        `json:"device_name"`
+	ReadTimeout time.Duration `json:"read_timeout"`
+	PingTime    time.Duration `json:"ping_time"`
+}
+
+func InitConfig() {
+	conf := Configuration{}
+	confBuf := bytes.NewReader(assets.ConfigBytes)
+	err := json.NewDecoder(confBuf).Decode(&conf)
+	if err != nil {
+		log.Fatal()
+	}
+	SeverIp = conf.ServerIp
+	SeverPort = conf.ServerPort
+	DeviceName = conf.DeviceName
+	ReadTimeout = conf.ReadTimeout
+	PingTime = conf.PingTime
+	log.Println("初始化配置成功!")
 }

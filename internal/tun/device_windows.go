@@ -21,9 +21,10 @@ type Tun struct {
 	fromNet <-chan []byte
 	adapter *wintun.Adapter
 	session wintun.Session
+	bufPool *sync.Pool
 }
 
-func NewTun(name string, ipByte []byte, toNet, fromNet chan []byte) Device {
+func NewTun(name string, ipByte []byte, toNet, fromNet chan []byte, bufPool *sync.Pool) Device {
 	ip := net.IP(ipByte)
 	mask := net.CIDRMask(24, 32)
 	subnet := &net.IPNet{
@@ -53,6 +54,7 @@ func NewTun(name string, ipByte []byte, toNet, fromNet chan []byte) Device {
 		session:    session,
 		toNet:      toNet,
 		fromNet:    fromNet,
+		bufPool:    bufPool,
 	}
 }
 
@@ -110,10 +112,10 @@ func (t *Tun) tunRecv(ctx context.Context) {
 
 					if dstIp.Equal(net.IPv4bcast) || dstIp[3] == 255 || dstIp.IsMulticast() || (t.Subnet.Contains(dstIp) && !dstIp.IsLoopback()) {
 						// TODO 使用对象池
-						payloadCopy := make([]byte, len(packet))
-						copy(payloadCopy, packet)
+						buf := t.bufPool.Get().([]byte)
+						copy(buf, packet)
 						select {
-						case t.toNet <- payloadCopy:
+						case t.toNet <- buf[:len(packet)]:
 						case <-ctx.Done():
 							return
 						}
