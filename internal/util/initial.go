@@ -1,3 +1,5 @@
+//go:build client
+
 package util
 
 import (

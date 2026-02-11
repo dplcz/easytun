@@ -1,6 +1,8 @@
 package errorcode
 
-import "errors"
+import (
+	"errors"
+)
 
 var (
 	// InvalidMagic 非法魔数

@@ -1,6 +1,6 @@
 {
-  "sever_ip": "127.0.0.1",
-  "server_port": 8081,
+  "server_ip": "43.139.214.171",
+  "server_port": 10011,
   "device_name": "default",
   "read_timeout": 5,
   "ping_time": 1

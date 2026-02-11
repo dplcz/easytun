@@ -185,8 +185,8 @@ func (h *Hub) Run(ctx context.Context) {
 		h.serverWS(ctx, w, r)
 	})
 	go h.listenUdp(ctx)
-	log.Printf("开始监听WS... 端口:%d", config.SeverPort)
-	err := http.ListenAndServe(fmt.Sprintf(":%d", config.SeverPort), nil)
+	log.Printf("开始监听WS... 端口:%d", config.ServerPort)
+	err := http.ListenAndServe(fmt.Sprintf(":%d", config.ServerPort), nil)
 	if err != nil {
 		log.Fatalf("HTTP 服务启动失败: %v", err)
 	}
@@ -233,7 +233,7 @@ func (h *Hub) handleControl(ctx context.Context) {
 }
 
 func (h *Hub) listenUdp(ctx context.Context) {
-	udpAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf(":%d", config.SeverPort))
+	udpAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf(":%d", config.ServerPort))
 	if err != nil {
 		log.Fatalf("UDP 地址解析失败: %v", err)
 	}

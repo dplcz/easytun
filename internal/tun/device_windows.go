@@ -3,6 +3,7 @@ package tun
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"os/exec"
@@ -34,17 +35,24 @@ func NewTun(name string, ipByte []byte, toNet, fromNet chan []byte, bufPool *syn
 
 	adapter, err := wintun.CreateAdapter(name, "Wintun", nil)
 	if err != nil {
-		log.Fatal(err)
+		panic(fmt.Sprintf("Failed to create Wintun adapter: %v", err))
 	}
 	session, err := adapter.StartSession(0x800000) // 环形缓冲区大小
 	if err != nil {
-		log.Fatalf("启动会话失败: %v", err)
+		panic(fmt.Sprintf("启动会话失败: %v", err))
 	}
-	log.Printf("%s 适配器已启动！\n", name)
+	log.Printf("%s 适配器已启动!\n", name)
 	cmd := exec.Command("netsh", "interface", "ip", "set", "address", name, "static", ip.String(), net.IP(subnet.Mask).String())
 	if output, err := cmd.CombinedOutput(); err != nil {
-		log.Fatalf("配置 IP 失败: %v, Output: %s", err, string(output))
+		panic(fmt.Sprintf("配置 IP 失败: %v, Output: %s", err, string(output)))
 	}
+	log.Printf("配置ip成功! 当前虚拟ip为: %s \n", ip.String())
+	cmdStr := fmt.Sprintf("Set-NetConnectionProfile -InterfaceAlias '%s' -NetworkCategory Private", name)
+	cmd = exec.Command("powershell", "-Command", cmdStr)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		panic(fmt.Sprintf("配置 IP 失败: %v, Output: %s", err, string(output)))
+	}
+	log.Println("配置专用网络成功!")
 
 	return &Tun{
 		Ip:         ip,
@@ -111,7 +119,6 @@ func (t *Tun) tunRecv(ctx context.Context) {
 					dstIp := net.IP(packet[16:20])
 
 					if dstIp.Equal(net.IPv4bcast) || dstIp[3] == 255 || dstIp.IsMulticast() || (t.Subnet.Contains(dstIp) && !dstIp.IsLoopback()) {
-						// TODO 使用对象池
 						buf := t.bufPool.Get().([]byte)
 						copy(buf, packet)
 						select {

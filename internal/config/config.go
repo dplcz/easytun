@@ -8,8 +8,8 @@ import (
 	"time"
 )
 
-var SeverIp string
-var SeverPort int
+var ServerIp string
+var ServerPort int
 var DeviceName string
 var ReadTimeout time.Duration
 var PingTime time.Duration
@@ -29,8 +29,8 @@ func InitConfig() {
 	if err != nil {
 		log.Fatal()
 	}
-	SeverIp = conf.ServerIp
-	SeverPort = conf.ServerPort
+	ServerIp = conf.ServerIp
+	ServerPort = conf.ServerPort
 	DeviceName = conf.DeviceName
 	ReadTimeout = conf.ReadTimeout
 	PingTime = conf.PingTime
