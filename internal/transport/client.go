@@ -63,7 +63,7 @@ func NewTransport() *ClientTransport {
 		ControlRecvChan: controlRecvChan,
 		ControlSendChan: controlSendChan,
 		bufPool: &sync.Pool{New: func() interface{} {
-			return make([]byte, 4*1024*1024)
+			return make([]byte, 2048)
 		}},
 	}
 
