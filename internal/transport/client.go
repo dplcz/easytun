@@ -234,20 +234,38 @@ func (t *ClientTransport) controlSend(ctx context.Context) {
 
 // packetSend 封包并发送
 func (t *ClientTransport) packetSend(ctx context.Context) {
+	batchSize := 16
+	payloadBatch := make([][]byte, 0, batchSize)
 	for {
 		select {
 		case packet := <-t.FromTun:
 			if len(packet) < 20 {
 				continue
 			}
-			dstIp := net.IP(packet[16:20])
-			gp := protocol.NewGamePacket([4]byte(t.localIp), [4]byte(dstIp), protocol.TypeData, packet)
-			_, err := t.dataConn.Write(gp.Encode())
-			t.bufPool.Put(packet)
-			if err != nil {
-				log.Println(err)
-				continue
+			payloadBatch = append(payloadBatch, packet)
+		DrainLoop:
+			for len(payloadBatch) < batchSize {
+				select {
+				case extraPacket := <-t.FromTun:
+					if len(extraPacket) < 20 {
+						continue
+					}
+					payloadBatch = append(payloadBatch, extraPacket)
+				default:
+					break DrainLoop
+				}
 			}
+			for _, p := range payloadBatch {
+				dstIp := net.IP(p[16:20])
+				gp := protocol.NewGamePacket([4]byte(t.localIp), [4]byte(dstIp), protocol.TypeData, p)
+				_, err := t.dataConn.Write(gp.Encode())
+				t.bufPool.Put(p[:0])
+				if err != nil {
+					log.Println(err)
+					continue
+				}
+			}
+			payloadBatch = payloadBatch[:0]
 		case <-ctx.Done():
 			return
 		}

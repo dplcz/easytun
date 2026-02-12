@@ -305,7 +305,11 @@ func (h *Hub) listenUdp(ctx context.Context) {
 			cnt := msg.N                       // 这个包的实际字节数
 			srcAddr := msg.Addr.(*net.UDPAddr) // 对方地址
 			payload := msg.Buffers[0][:cnt]
-			copyData := h.bufPool.Get().([]byte)[:cnt]
+			copyData := h.bufPool.Get().([]byte)
+			if cap(copyData) < cnt {
+				copyData = make([]byte, cnt)
+			}
+			copyData = copyData[:cnt]
 			copy(copyData, payload)
 			gp := &protocol.GamePacket{}
 			err = gp.Parse(copyData, true)
