@@ -185,18 +185,16 @@ func (c *Client) writeUdpPacket(ctx context.Context) {
 			}
 
 			targetAddr := c.dataAddr.Load()
-			if targetAddr == nil {
-				continue
+			if targetAddr != nil {
+				for i, p := range packetBatch {
+					msgs[i].Buffers = [][]byte{p} // 设置数据
+					msgs[i].Addr = targetAddr     // 设置目标地址
+				}
+				_, err := c.hub.PacketConn.WriteBatch(msgs[:len(packetBatch)], 0)
+				if err != nil {
+					log.Println(err)
+				}
 			}
-			for i, p := range packetBatch {
-				msgs[i].Buffers = [][]byte{p} // 设置数据
-				msgs[i].Addr = targetAddr     // 设置目标地址
-			}
-			_, err := c.hub.PacketConn.WriteBatch(msgs[:len(packetBatch)], 0)
-			if err != nil {
-				log.Println(err)
-			}
-
 			packetBatch = packetBatch[:0]
 		case <-ctx.Done():
 			return
