@@ -117,19 +117,24 @@ func (t *Tun) tunRecv(ctx context.Context) {
 				func() {
 					// 释放 packet
 					defer t.session.ReleaseReceivePacket(packet)
-
-					if len(packet) < 20 || packet[0]>>4 != 4 {
+					packetLen := len(packet)
+					if packetLen < 20 || packet[0]>>4 != 4 {
 						return // 忽略非法包
 					}
 					dstIp := net.IP(packet[16:20])
 
 					if dstIp.Equal(net.IPv4bcast) || dstIp[3] == 255 || dstIp.IsMulticast() || (t.Subnet.Contains(dstIp) && !dstIp.IsLoopback()) {
 						buf := t.bufPool.Get().([]byte)
-						buf = buf[:cap(buf)]
+						if cap(buf) < packetLen {
+							t.bufPool.Put(buf)
+							buf = make([]byte, packetLen)
+						}
+						buf = buf[:packetLen]
 						copy(buf, packet)
 						select {
-						case t.toNet <- buf[:len(packet)]:
+						case t.toNet <- buf:
 						case <-ctx.Done():
+							t.bufPool.Put(buf)
 							return
 						default:
 							t.bufPool.Put(buf)

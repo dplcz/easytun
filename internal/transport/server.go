@@ -307,6 +307,7 @@ func (h *Hub) listenUdp(ctx context.Context) {
 			payload := msg.Buffers[0][:cnt]
 			copyData := h.bufPool.Get().([]byte)
 			if cap(copyData) < cnt {
+				h.bufPool.Put(copyData)
 				copyData = make([]byte, cnt)
 			}
 			copyData = copyData[:cnt]
