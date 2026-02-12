@@ -15,6 +15,7 @@ popd
 :: 定义各个关键文件的绝对路径
 set CLIENT_DIR=%PROJECT_ROOT%\cmd\client
 set DIST_DIR=%PROJECT_ROOT%\dist
+set ICON=%PROJECT_ROOT%\assets\app.ico
 set MANIFEST=%PROJECT_ROOT%\scripts\app.manifest
 :: 关键：资源文件必须生成在 main.go 旁边
 set SYSO_TARGET=%CLIENT_DIR%\resource.syso
@@ -25,6 +26,7 @@ set EXE_OUTPUT=%DIST_DIR%\client.exe
 :: ==========================================
 echo [1/4] 正在生成资源文件...
 echo    - Manifest: %MANIFEST%
+echo    - Icon:     %ICON%
 echo    - Target:   %SYSO_TARGET%
 
 :: 检查 rsrc 是否存在
@@ -34,8 +36,8 @@ if %ERRORLEVEL% neq 0 go install github.com/akavel/rsrc@latest
 :: 确保清理旧文件
 if exist "%SYSO_TARGET%" del /q "%SYSO_TARGET%"
 
-:: 生成 .syso (包含图标和权限)
-rsrc -manifest "%MANIFEST%" -o "%SYSO_TARGET%"
+:: 生成 .syso
+rsrc -manifest "%MANIFEST%" -ico "%ICON%" -o "%SYSO_TARGET%"
 
 if %ERRORLEVEL% neq 0 (
     echo [错误] 资源生成失败！

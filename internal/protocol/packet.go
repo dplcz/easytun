@@ -117,6 +117,7 @@ func (g *GamePacket) Parse(data []byte, parsePayload bool) error {
 			reader.Read(payload)
 			g.Payload = payload
 		}
+		// TODO 未来实现零拷贝
 	}
 	return nil
 }
