@@ -234,7 +234,7 @@ func (t *ClientTransport) controlSend(ctx context.Context) {
 
 // packetSend 封包并发送
 func (t *ClientTransport) packetSend(ctx context.Context) {
-	batchSize := 16
+	batchSize := 64
 	payloadBatch := make([][]byte, 0, batchSize)
 	for {
 		select {
