@@ -258,6 +258,7 @@ func (t *ClientTransport) packetSend(ctx context.Context) {
 			for _, p := range payloadBatch {
 				dstIp := net.IP(p[16:20])
 				gp := protocol.NewGamePacket([4]byte(t.localIp), [4]byte(dstIp), protocol.TypeData, p)
+				// TODO 尝试使用windows系统调用批量发送
 				_, err := t.dataConn.Write(gp.Encode())
 				t.bufPool.Put(p[:0])
 				if err != nil {
@@ -277,6 +278,7 @@ func (t *ClientTransport) packetRecv(ctx context.Context) {
 	buffer := make([]byte, 4*1024*1024)
 	for ctx.Err() == nil {
 		t.dataConn.SetReadDeadline(time.Now().Add(time.Second * config.ReadTimeout))
+		// TODO 尝试使用windows系统调用批量发送
 		cnt, addr, err := t.dataConn.ReadFromUDP(buffer)
 		if err != nil {
 			var netErr *net.OpError
