@@ -7,7 +7,6 @@ import (
 	"game_tun/internal/config"
 	"game_tun/internal/errorcode"
 	"game_tun/internal/protocol"
-	"golang.org/x/net/ipv4"
 	"log"
 	"math/rand/v2"
 	"net"
@@ -15,6 +14,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"golang.org/x/net/ipv4"
 
 	"github.com/gorilla/websocket"
 )
@@ -56,7 +57,8 @@ type Hub struct {
 	ipMtx    sync.Mutex
 	ipBitMap map[uint8]struct{}
 
-	Subnet *net.IPNet
+	Subnet  *net.IPNet
+	bufPool *sync.Pool
 }
 
 func newClient(hub *Hub, controlConn *websocket.Conn, dataAddr *net.UDPAddr, virtualIp net.IP) *Client {
@@ -84,6 +86,7 @@ func NewHub() *Hub {
 		ipMtx:        sync.Mutex{},
 		ipBitMap:     make(map[uint8]struct{}),
 		Subnet:       subnet,
+		bufPool:      &sync.Pool{New: func() interface{} { return make([]byte, 2048) }},
 	}
 }
 
@@ -279,12 +282,16 @@ func (h *Hub) listenUdp(ctx context.Context) {
 
 	h.PacketConn = ipv4.NewPacketConn(conn)
 	h.UdpConn = conn
+	batchSize := 64
+	msgs := make([]ipv4.Message, batchSize)
 	go h.transfer(ctx)
-	buf := make([]byte, 4*1024*1024)
 	log.Println("开始监听UDP...")
+	for i := range msgs {
+		msgs[i].Buffers = [][]byte{make([]byte, 2048)}
+	}
 	for ctx.Err() == nil {
 		h.UdpConn.SetReadDeadline(time.Now().Add(config.ReadTimeout * time.Second))
-		cnt, clientAddr, err := h.UdpConn.ReadFromUDP(buf)
+		count, err := h.PacketConn.ReadBatch(msgs, 0)
 		if err != nil {
 			var netErr *net.OpError
 			if errors.As(err, &netErr) && netErr.Timeout() {
@@ -293,32 +300,39 @@ func (h *Hub) listenUdp(ctx context.Context) {
 			log.Println(err)
 			continue
 		}
-		copyData := make([]byte, cnt)
-		copy(copyData, buf[:cnt])
-		gp := &protocol.GamePacket{}
-		err = gp.Parse(copyData, true)
-		if err != nil {
-			log.Println(err)
-			continue
-		}
-		if cnt < int(gp.Length) {
-			log.Println(errorcode.PayloadMismatch)
-			continue
-		}
-		if gp.PType != protocol.TypeData {
-			log.Println(errorcode.PayloadMismatch)
-			continue
-		}
-		tp := &transferPacket{
-			gp:      gp,
-			srcAddr: clientAddr,
-		}
-		select {
-		case h.transferChan <- tp:
-		case <-ctx.Done():
-			return
-		default:
-			log.Println("transferChan已满")
+		for i := 0; i < count; i++ {
+			msg := msgs[i]
+			cnt := msg.N                       // 这个包的实际字节数
+			srcAddr := msg.Addr.(*net.UDPAddr) // 对方地址
+			payload := msg.Buffers[0][:cnt]
+			copyData := h.bufPool.Get().([]byte)[:cnt]
+			copy(copyData, payload)
+			gp := &protocol.GamePacket{}
+			err = gp.Parse(copyData, true)
+			h.bufPool.Put(copyData[:0])
+			if err != nil {
+				log.Println(err)
+				continue
+			}
+			if cnt < int(gp.Length) {
+				log.Println(errorcode.PayloadMismatch)
+				continue
+			}
+			if gp.PType != protocol.TypeData {
+				log.Println(errorcode.PayloadMismatch)
+				continue
+			}
+			tp := &transferPacket{
+				gp:      gp,
+				srcAddr: srcAddr,
+			}
+			select {
+			case h.transferChan <- tp:
+			case <-ctx.Done():
+				return
+			default:
+				log.Println("transferChan已满")
+			}
 		}
 	}
 }
