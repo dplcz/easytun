@@ -159,7 +159,7 @@ func (t *Tun) tunRecv(ctx context.Context) {
 
 // tunSend 处理接收的包并转发给tun
 func (t *Tun) tunSend(ctx context.Context) {
-	batchSize := 16
+	batchSize := 64
 	payloadBatch := make([][]byte, 0, batchSize)
 	for {
 		select {
