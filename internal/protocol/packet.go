@@ -108,6 +108,10 @@ func (g *GamePacket) EncodePacket(pool *sync.Pool) []byte {
 	return data
 }
 
+func (g *GamePacket) EncodeWithoutPool(data []byte) []byte {
+	return g.encode(data)
+}
+
 func (g *GamePacket) ParsePacket(pool *sync.Pool, content []byte, parsePayload bool) error {
 	if parsePayload {
 		data := pool.Get().([]byte)

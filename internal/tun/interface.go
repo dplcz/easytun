@@ -17,5 +17,5 @@ type Device interface {
 	LUID() uint64
 
 	Close() error
-	Start(ctx context.Context)
+	Start(ctx context.Context, headerLength int)
 }

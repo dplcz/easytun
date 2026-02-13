@@ -71,12 +71,12 @@ func NewTun(name string, ipByte []byte, toNet, fromNet chan []byte, bufPool *syn
 	}
 }
 
-func (t *Tun) Start(ctx context.Context) {
+func (t *Tun) Start(ctx context.Context, headerLength int) {
 	wg := sync.WaitGroup{}
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		t.tunSend(ctx)
+		t.tunSend(ctx, headerLength)
 	}()
 	go func() {
 		defer wg.Done()
@@ -134,10 +134,10 @@ func (t *Tun) tunRecv(ctx context.Context) {
 						select {
 						case t.toNet <- buf:
 						case <-ctx.Done():
-							t.bufPool.Put(buf)
+							t.bufPool.Put(buf[:0])
 							return
 						default:
-							t.bufPool.Put(buf)
+							t.bufPool.Put(buf[:0])
 							log.Println("toNet 已满")
 						}
 					}
@@ -158,19 +158,19 @@ func (t *Tun) tunRecv(ctx context.Context) {
 }
 
 // tunSend 处理接收的包并转发给tun
-func (t *Tun) tunSend(ctx context.Context) {
+func (t *Tun) tunSend(ctx context.Context, headerLength int) {
 	batchSize := 64
 	payloadBatch := make([][]byte, 0, batchSize)
 	for {
 		select {
 		case payload := <-t.fromNet:
-			if len(payload) > 0 {
+			if len(payload) > headerLength {
 				payloadBatch = append(payloadBatch, payload)
 			DrainLoop:
 				for len(payloadBatch) < batchSize {
 					select {
 					case extraPacket := <-t.fromNet:
-						if len(payload) > 0 {
+						if len(payload) > headerLength {
 							payloadBatch = append(payloadBatch, extraPacket)
 						}
 					default:
@@ -179,12 +179,14 @@ func (t *Tun) tunSend(ctx context.Context) {
 				}
 			}
 			for _, p := range payloadBatch {
-				packetBuffer, err := t.session.AllocateSendPacket(len(p))
+				packetBuffer, err := t.session.AllocateSendPacket(len(p) - headerLength)
 				if err == nil {
-					copy(packetBuffer, p)
+					copy(packetBuffer, p[headerLength:])
 					t.session.SendPacket(packetBuffer)
+					t.bufPool.Put(p[:0])
 				} else {
 					log.Printf("Wintun Allocate 失败: %v", err)
+					t.bufPool.Put(p[:0])
 				}
 			}
 			payloadBatch = payloadBatch[:0]
