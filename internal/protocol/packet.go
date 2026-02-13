@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"encoding/binary"
 	"game_tun/internal/errorcode"
-	"log"
 	"net"
+	"sync"
 )
 
 const (
@@ -24,13 +24,8 @@ type GamePacket struct {
 	dst     [4]byte
 	PType   uint8
 	Payload []byte
+	RawData []byte
 	Length  uint16
-}
-
-type Packet interface {
-	CalculateMs() int
-	Encode() ([]byte, error)
-	Decode([]byte) error
 }
 
 func NewGamePacket(src, dst [4]byte, pType uint8, payload []byte) *GamePacket {
@@ -38,6 +33,7 @@ func NewGamePacket(src, dst [4]byte, pType uint8, payload []byte) *GamePacket {
 		src:     src,
 		dst:     dst,
 		PType:   pType,
+		Length:  uint16(len(payload)),
 		Payload: payload,
 	}
 }
@@ -49,39 +45,17 @@ func (g *GamePacket) CalculateMs() int {
 
 // [magic 2][pType 1][src 4][dst 4][length 2][payload]
 
-func (g *GamePacket) Encode() []byte {
-	buf := bytes.NewBuffer(make([]byte, 0))
-	if err := binary.Write(buf, binary.BigEndian, uint16(MagicNumber)); err != nil {
-		log.Println(err)
-		return nil
-	}
-	if err := binary.Write(buf, binary.BigEndian, g.PType); err != nil {
-		log.Println(err)
-		return nil
-	}
-	if err := binary.Write(buf, binary.BigEndian, g.src); err != nil {
-		log.Println(err)
-		return nil
-	}
-	if err := binary.Write(buf, binary.BigEndian, g.dst); err != nil {
-		log.Println(err)
-		return nil
-	}
-	length := len(g.Payload)
-	if err := binary.Write(buf, binary.BigEndian, uint16(length)); err != nil {
-		log.Println(err)
-		return nil
-	}
-	if length > 0 {
-		if err := binary.Write(buf, binary.BigEndian, g.Payload); err != nil {
-			log.Println(err)
-			return nil
-		}
-	}
-	return buf.Bytes()
+func (g *GamePacket) encode(b []byte) []byte {
+	b = binary.BigEndian.AppendUint16(b, MagicNumber)
+	b = append(b, g.PType)
+	b = append(b, g.src[:]...)
+	b = append(b, g.dst[:]...)
+	b = binary.BigEndian.AppendUint16(b, g.Length)
+	b = append(b, g.Payload...)
+	return b
 }
 
-func (g *GamePacket) Parse(data []byte, parsePayload bool) error {
+func (g *GamePacket) parse(data []byte, parsePayload bool) error {
 	var magic uint16
 
 	if len(data) < HeaderLength {
@@ -108,16 +82,8 @@ func (g *GamePacket) Parse(data []byte, parsePayload bool) error {
 		return err
 	}
 	if parsePayload {
-		var payload []byte
-		if g.Length > 0 {
-			if int(g.Length) > reader.Len() {
-				return errorcode.PayloadMismatch
-			}
-			payload = make([]byte, int(g.Length))
-			reader.Read(payload)
-			g.Payload = payload
-		}
-		// TODO 未来实现零拷贝
+		g.Payload = data[HeaderLength : HeaderLength+int(g.Length)]
+		g.RawData = data
 	}
 	return nil
 }
@@ -128,4 +94,31 @@ func (g *GamePacket) Destination() net.IP {
 
 func (g *GamePacket) SourceVirtualIp() net.IP {
 	return net.IPv4(g.src[0], g.src[1], g.src[2], g.src[3])
+}
+
+func (g *GamePacket) EncodePacket(pool *sync.Pool) []byte {
+	dataLength := int(g.Length + HeaderLength)
+	data := pool.Get().([]byte)
+	if cap(data) < dataLength {
+		pool.Put(data)
+		data = make([]byte, dataLength)
+	}
+	data = data[:0]
+	data = g.encode(data)
+	return data
+}
+
+func (g *GamePacket) ParsePacket(pool *sync.Pool, content []byte, parsePayload bool) error {
+	if parsePayload {
+		data := pool.Get().([]byte)
+		if cap(data) < len(content) {
+			pool.Put(data[:0])
+			data = make([]byte, len(content))
+		}
+		data = data[:len(content)]
+		copy(data, content)
+		return g.parse(data, parsePayload)
+	}
+	return g.parse(content, parsePayload)
+
 }
