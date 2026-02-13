@@ -20,12 +20,13 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"golang.org/x/net/ipv4"
 )
 
 type ClientTransport struct {
 	device tun.Device
 
-	FromTun <-chan []byte
+	FromTun chan []byte
 	FromNet chan<- []byte
 
 	// 服务器收发队列
@@ -75,7 +76,8 @@ func NewTransport() *ClientTransport {
 	if err != nil {
 		panic(err)
 	}
-	t.localIp = handshake.Payload[:4]
+	t.localIp = net.IPv4(handshake.Payload[0], handshake.Payload[1], handshake.Payload[2], handshake.Payload[3])
+	t.bufPool.Put(handshake.RawData[:0])
 	device := tun.NewTun(config.DeviceName, t.localIp, outerChan, innerChan, t.bufPool)
 	t.device = device
 	return t
@@ -108,7 +110,9 @@ func (t *ClientTransport) connectServer() error {
 // handshake 与服务器握手连接
 func (t *ClientTransport) handshake() (*protocol.GamePacket, error) {
 	handshakePacket := protocol.NewGamePacket([4]byte{}, [4]byte{}, protocol.TypeHandshake, nil)
-	err := t.controlConn.WriteMessage(websocket.BinaryMessage, handshakePacket.Encode())
+	data := handshakePacket.EncodePacket(t.bufPool)
+	err := t.controlConn.WriteMessage(websocket.BinaryMessage, data)
+	t.bufPool.Put(data[:0])
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +121,7 @@ func (t *ClientTransport) handshake() (*protocol.GamePacket, error) {
 	if err != nil {
 		return nil, err
 	}
-	err = handshakePacket.Parse(content, true)
+	err = handshakePacket.ParsePacket(t.bufPool, content, true)
 	if err != nil {
 		return nil, err
 	}
@@ -125,8 +129,8 @@ func (t *ClientTransport) handshake() (*protocol.GamePacket, error) {
 }
 
 // ListenAndServe 监听服务
-func (t *ClientTransport) ListenAndServe() {
-	ctx, cancel := context.WithCancel(context.Background())
+func (t *ClientTransport) ListenAndServe(ctx context.Context, cancel context.CancelFunc, testFlag bool, testSecond *time.Duration) {
+
 	wg := sync.WaitGroup{}
 	wg.Add(6)
 
@@ -159,8 +163,16 @@ func (t *ClientTransport) ListenAndServe() {
 	go func() {
 		defer wg.Done()
 		defer log.Println(6)
-		t.device.Start(ctx)
+		t.device.Start(ctx, protocol.HeaderLength)
 	}()
+	if testFlag {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer log.Println(5)
+			t.testBroadCast(ctx, *testSecond)
+		}()
+	}
 	wg.Wait()
 }
 
@@ -184,29 +196,41 @@ func (t *ClientTransport) heartbeat(ctx context.Context) {
 func (t *ClientTransport) controlRecv(ctx context.Context) {
 	defer t.controlConn.Close()
 	for ctx.Err() == nil {
-		gp := &protocol.GamePacket{}
-		t.controlConn.SetReadDeadline(time.Now().Add(time.Second * config.ReadTimeout * 3))
+		//gp := &protocol.GamePacket{}
+		t.controlConn.SetReadDeadline(time.Now().Add(time.Second * config.ReadTimeout))
 		t.controlConn.SetPongHandler(func(string) error {
 			//log.Println("pong")
-			t.controlConn.SetReadDeadline(time.Now().Add(time.Second * config.ReadTimeout * 3))
+			t.controlConn.SetReadDeadline(time.Now().Add(time.Second * config.ReadTimeout))
 			return nil
 		})
-		_, content, err := t.controlConn.ReadMessage()
+		_, _, err := t.controlConn.ReadMessage()
 		if err != nil {
 			log.Println(err)
 			break
 		}
-		err = gp.Parse(content, true)
-		if err != nil {
-			log.Println(err)
-			break
-		}
-		select {
-		case t.ControlRecvChan <- gp:
-			continue
-		case <-ctx.Done():
-			return
-		}
+		// TODO 处理控制消息
+		//data := t.bufPool.Get().([]byte)
+		//if cap(data) < len(content) {
+		//	t.bufPool.Put(data[:0])
+		//	data = make([]byte, len(content))
+		//}
+		//data = data[:len(content)]
+		//copy(data, content)
+		//err = gp.Parse(data, true)
+		//if err != nil {
+		//	log.Println(err)
+		//	break
+		//}
+		//select {
+		//case t.ControlRecvChan <- gp:
+		//	continue
+		//case <-ctx.Done():
+		//	t.bufPool.Put(data[:0])
+		//	return
+		//default:
+		//	t.bufPool.Put(data[:0])
+		//	continue
+		//}
 	}
 }
 
@@ -222,12 +246,15 @@ func (t *ClientTransport) controlSend(ctx context.Context) {
 					return
 				}
 			}
-			err := t.controlConn.WriteMessage(websocket.BinaryMessage, gp.Encode())
+			data := gp.EncodePacket(t.bufPool)
+			err := t.controlConn.WriteMessage(websocket.BinaryMessage, data)
+			t.bufPool.Put(data[:0])
 			if err != nil {
 				log.Println(err)
 				break
 			}
 		case <-ctx.Done():
+			return
 		}
 	}
 }
@@ -238,11 +265,11 @@ func (t *ClientTransport) packetSend(ctx context.Context) {
 	payloadBatch := make([][]byte, 0, batchSize)
 	for {
 		select {
-		case packet := <-t.FromTun:
-			if len(packet) < 20 {
+		case pr := <-t.FromTun:
+			if len(pr) < 20 {
 				continue
 			}
-			payloadBatch = append(payloadBatch, packet)
+			payloadBatch = append(payloadBatch, pr)
 		DrainLoop:
 			for len(payloadBatch) < batchSize {
 				select {
@@ -258,8 +285,8 @@ func (t *ClientTransport) packetSend(ctx context.Context) {
 			for _, p := range payloadBatch {
 				dstIp := net.IP(p[16:20])
 				gp := protocol.NewGamePacket([4]byte(t.localIp), [4]byte(dstIp), protocol.TypeData, p)
-				// TODO 尝试使用windows系统调用批量发送
-				_, err := t.dataConn.Write(gp.Encode())
+				data := gp.EncodeWithoutPool(p)
+				_, err := t.dataConn.Write(data)
 				t.bufPool.Put(p[:0])
 				if err != nil {
 					log.Println(err)
@@ -278,7 +305,6 @@ func (t *ClientTransport) packetRecv(ctx context.Context) {
 	buffer := make([]byte, 4*1024*1024)
 	for ctx.Err() == nil {
 		t.dataConn.SetReadDeadline(time.Now().Add(time.Second * config.ReadTimeout))
-		// TODO 尝试使用windows系统调用批量发送
 		cnt, addr, err := t.dataConn.ReadFromUDP(buffer)
 		if err != nil {
 			var netErr *net.OpError
@@ -290,9 +316,7 @@ func (t *ClientTransport) packetRecv(ctx context.Context) {
 		}
 		if addr.IP.Equal(t.serverAddr.IP) && addr.Port == t.serverAddr.Port {
 			gp := &protocol.GamePacket{}
-			dataCopy := make([]byte, cnt)
-			copy(dataCopy, buffer[:cnt])
-			err = gp.Parse(dataCopy, false)
+			err = gp.ParsePacket(t.bufPool, buffer[:cnt], true)
 			if err != nil {
 				log.Println(err)
 				continue
@@ -304,12 +328,40 @@ func (t *ClientTransport) packetRecv(ctx context.Context) {
 				continue
 			}
 			select {
-			case t.FromNet <- dataCopy[protocol.HeaderLength:packetEnd]:
+			case t.FromNet <- gp.RawData:
 			case <-ctx.Done():
 				return
 			default:
 				log.Println("FromNet 已满")
 			}
+		}
+	}
+}
+
+func (t *ClientTransport) testBroadCast(ctx context.Context, second time.Duration) {
+	timer := time.NewTicker(time.Second * second)
+	broadCastHeader := &ipv4.Header{
+		Version:  ipv4.Version,
+		Len:      ipv4.HeaderLen,
+		TOS:      0x0,
+		TotalLen: ipv4.HeaderLen,
+		TTL:      64,
+		Protocol: 17,            // UDP
+		Dst:      net.IPv4bcast, // 255.255.255.255
+		Src:      t.localIp,     // 你的虚拟 IP
+	}
+	bch, err := broadCastHeader.Marshal()
+	if err != nil {
+		panic(err)
+	}
+	defer timer.Stop()
+	for {
+		select {
+		case <-timer.C:
+			log.Println("执行广播...")
+			t.FromTun <- bch
+		case <-ctx.Done():
+			return
 		}
 	}
 }

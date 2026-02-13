@@ -131,7 +131,7 @@ func (c *Client) writePump(ctx context.Context, cancel context.CancelFunc) {
 func (c *Client) readPump(ctx context.Context, cancel context.CancelFunc) {
 	pongGp := protocol.NewGamePacket([4]byte{}, [4]byte{}, protocol.TypePong, nil)
 	c.controlConn.SetPingHandler(func(string) error {
-		c.controlConn.SetReadDeadline(time.Now().Add(config.ReadTimeout * time.Second * 3))
+		c.controlConn.SetReadDeadline(time.Now().Add(config.ReadTimeout * time.Second))
 		c.controlChan <- pongGp
 		return nil
 	})
@@ -179,6 +179,7 @@ func (c *Client) readPump(ctx context.Context, cancel context.CancelFunc) {
 	}
 }
 
+// TODO 修改为工作池
 func (c *Client) writeUdpPacket(ctx context.Context) {
 	batchSize := 32
 	msgs := make([]ipv4.Message, batchSize)
@@ -362,6 +363,7 @@ func (h *Hub) listenUdp(ctx context.Context) {
 	}
 }
 
+// TODO 修改为工作池
 func (h *Hub) transfer(ctx context.Context) {
 	for {
 		select {
