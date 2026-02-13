@@ -46,7 +46,7 @@ func (g *GamePacket) CalculateMs() int {
 // [magic 2][pType 1][src 4][dst 4][length 2][payload]
 
 func (g *GamePacket) encode(b []byte) []byte {
-	b = binary.BigEndian.AppendUint16(b, MagicNumber)
+	b = binary.BigEndian.AppendUint16(b, uint16(MagicNumber))
 	b = append(b, g.PType)
 	b = append(b, g.src[:]...)
 	b = append(b, g.dst[:]...)

@@ -153,12 +153,26 @@ func (t *ClientTransport) ListenAndServe(ctx context.Context, cancel context.Can
 	go func() {
 		defer wg.Done()
 		defer log.Println(4)
-		t.packetRecv(ctx)
+		log.Printf("已启用 %d 个接收者\n", config.RecvWorkers)
+		for i := 0; i < config.RecvWorkers; i++ {
+			go t.packetRecv(ctx)
+		}
+		select {
+		case <-ctx.Done():
+		}
+
 	}()
 	go func() {
 		defer wg.Done()
 		defer log.Println(5)
-		t.packetSend(ctx)
+		log.Printf("已启用 %d 个发送者\n", config.SendWorkers)
+		for i := 0; i < config.SendWorkers; i++ {
+			go t.packetSend(ctx)
+		}
+		select {
+		case <-ctx.Done():
+		}
+
 	}()
 	go func() {
 		defer wg.Done()
@@ -180,7 +194,7 @@ func (t *ClientTransport) ListenAndServe(ctx context.Context, cancel context.Can
 func (t *ClientTransport) heartbeat(ctx context.Context) {
 	timer := time.NewTicker(time.Second * config.PingTime)
 	defer timer.Stop()
-	hearbeatPacket := protocol.NewGamePacket([4]byte(t.localIp), [4]byte{}, protocol.TypePing, nil)
+	hearbeatPacket := protocol.NewGamePacket([4]byte(t.localIp.To4()), [4]byte{}, protocol.TypePing, nil)
 	for {
 		select {
 		case <-timer.C:
@@ -261,7 +275,7 @@ func (t *ClientTransport) controlSend(ctx context.Context) {
 
 // packetSend 封包并发送
 func (t *ClientTransport) packetSend(ctx context.Context) {
-	batchSize := 64
+	batchSize := 32
 	payloadBatch := make([][]byte, 0, batchSize)
 	for {
 		select {
@@ -284,10 +298,11 @@ func (t *ClientTransport) packetSend(ctx context.Context) {
 			}
 			for _, p := range payloadBatch {
 				dstIp := net.IP(p[16:20])
-				gp := protocol.NewGamePacket([4]byte(t.localIp), [4]byte(dstIp), protocol.TypeData, p)
-				data := gp.EncodeWithoutPool(p)
+				gp := protocol.NewGamePacket([4]byte(t.localIp.To4()), [4]byte(dstIp), protocol.TypeData, p)
+				data := gp.EncodePacket(t.bufPool)
 				_, err := t.dataConn.Write(data)
 				t.bufPool.Put(p[:0])
+				t.bufPool.Put(data)
 				if err != nil {
 					log.Println(err)
 					continue
@@ -325,6 +340,7 @@ func (t *ClientTransport) packetRecv(ctx context.Context) {
 			packetEnd := protocol.HeaderLength + gp.Length
 			if cnt < int(packetEnd) {
 				log.Println(errorcode.PayloadMismatch)
+				t.bufPool.Put(gp.RawData[:0])
 				continue
 			}
 			select {
@@ -332,7 +348,8 @@ func (t *ClientTransport) packetRecv(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			default:
-				log.Println("FromNet 已满")
+				t.bufPool.Put(gp.RawData[:0])
+				//log.Println("FromNet 已满")
 			}
 		}
 	}
