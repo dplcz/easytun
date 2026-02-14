@@ -3,9 +3,9 @@
 package tun
 
 import (
+	"easytun/assets"
 	_ "embed"
 	"fmt"
-	"game_tun/assets"
 	"os"
 	"path/filepath"
 	"runtime"

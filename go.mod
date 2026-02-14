@@ -1,4 +1,4 @@
-module game_tun
+module easytun
 
 go 1.25.6
 

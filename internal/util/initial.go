@@ -3,8 +3,8 @@
 package util
 
 import (
-	"game_tun/internal/config"
-	"game_tun/internal/tun"
+	"easytun/internal/config"
+	"easytun/internal/tun"
 	"log"
 )
 

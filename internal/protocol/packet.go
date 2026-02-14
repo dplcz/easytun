@@ -2,8 +2,8 @@ package protocol
 
 import (
 	"bytes"
+	"easytun/internal/errorcode"
 	"encoding/binary"
-	"game_tun/internal/errorcode"
 	"net"
 	"sync"
 )

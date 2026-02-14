@@ -10,7 +10,7 @@ set PROJECT_ROOT=%cd%
 :: ==========================================
 :: 配置区域
 :: ==========================================
-set BIN_NAME=server
+set BIN_NAME=easytun-server
 set MAIN_PATH=./cmd/server/main.go
 set OUTPUT_DIR=./dist
 :: 如果你的服务端有特殊的 build tags，可以在此添加

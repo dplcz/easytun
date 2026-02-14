@@ -2,8 +2,8 @@ package main
 
 import (
 	"context"
-	"game_tun/internal/config"
-	"game_tun/internal/transport"
+	"easytun/internal/config"
+	"easytun/internal/transport"
 	"log"
 	"net/http"
 	_ "net/http/pprof"
