@@ -19,7 +19,7 @@ set BUILD_TAGS=server
 set GOOS=linux
 set GOARCH=amd64
 set CGO_ENABLED=0
-set DOCKER_IMAGE_NAME=wintun-server:latest
+set DOCKER_IMAGE_NAME=easytun-server:latest
 
 echo [1/3] 正在清理旧的 Linux 编译产物...
 if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
