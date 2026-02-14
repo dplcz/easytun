@@ -2,9 +2,9 @@ package main
 
 import (
 	"context"
+	"easytun/internal/transport"
+	"easytun/internal/util"
 	"flag"
-	"game_tun/internal/transport"
-	"game_tun/internal/util"
 	"log"
 	"os"
 	"os/signal"

@@ -2,11 +2,11 @@ package transport
 
 import (
 	"context"
+	"easytun/internal/config"
+	"easytun/internal/errorcode"
+	"easytun/internal/protocol"
 	"errors"
 	"fmt"
-	"game_tun/internal/config"
-	"game_tun/internal/errorcode"
-	"game_tun/internal/protocol"
 	"log"
 	"math/rand/v2"
 	"net"

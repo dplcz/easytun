@@ -144,4 +144,5 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
-assets/example/*
+assets/config/*
+!assets/config/*.example

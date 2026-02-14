@@ -2,8 +2,8 @@ package config
 
 import (
 	"bytes"
+	"easytun/assets"
 	"encoding/json"
-	"game_tun/assets"
 	"log"
 	"time"
 )

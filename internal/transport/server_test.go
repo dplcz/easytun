@@ -2,7 +2,7 @@ package transport
 
 import (
 	"context"
-	"game_tun/internal/config"
+	"easytun/internal/config"
 	"testing"
 )
 

@@ -19,7 +19,7 @@ set ICON=%PROJECT_ROOT%\assets\app.ico
 set MANIFEST=%PROJECT_ROOT%\scripts\app.manifest
 :: 关键：资源文件必须生成在 main.go 旁边
 set SYSO_TARGET=%CLIENT_DIR%\resource.syso
-set EXE_OUTPUT=%DIST_DIR%\client.exe
+set EXE_OUTPUT=%DIST_DIR%\easytun.exe
 
 :: ==========================================
 :: 2. 生成资源文件 (直接写入 cmd/client)
