@@ -146,3 +146,6 @@ dmypy.json
 
 assets/config/*
 !assets/config/*.example
+
+!assets/amd64/
+!assets/amd64/*.dll
