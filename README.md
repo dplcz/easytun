@@ -150,6 +150,7 @@ Client flags:
 
 - `-t`: test mode (periodically sends broadcast packets).
 - `-i`: broadcast interval in test mode (seconds, default `5`).
+- `-c`: Use external configuration file (configuration file path, default embedded configuration).
 
 ## 🛠️ Build with Scripts
 
