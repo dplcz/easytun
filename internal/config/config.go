@@ -5,6 +5,7 @@ import (
 	"easytun/assets"
 	"encoding/json"
 	"log"
+	"os"
 	"time"
 )
 
@@ -26,12 +27,24 @@ type Configuration struct {
 	RecvWorkers int           `json:"recv_workers"`
 }
 
-func InitConfig() {
+func InitConfig(localPath string) {
 	conf := Configuration{}
-	confBuf := bytes.NewReader(assets.ConfigBytes)
-	err := json.NewDecoder(confBuf).Decode(&conf)
+	var confBuf *bytes.Reader
+	var err error
+	if localPath == "" {
+		confBuf = bytes.NewReader(assets.ConfigBytes)
+		err = json.NewDecoder(confBuf).Decode(&conf)
+	} else {
+		log.Println("loading config file:", localPath)
+		file, err := os.Open(localPath)
+		if err != nil {
+			panic(err)
+		}
+		defer file.Close()
+		err = json.NewDecoder(file).Decode(&conf)
+	}
 	if err != nil {
-		log.Fatal()
+		panic(err)
 	}
 	ServerIp = conf.ServerIp
 	ServerPort = conf.ServerPort
