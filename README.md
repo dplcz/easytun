@@ -232,7 +232,7 @@ docker run -d --name easytun-server \
 - [ ] Add UDP data encryption support.
 - [ ] Refactor server UDP RX/TX and forwarding into a configurable worker pool.
 - [ ] Add Linux client support (TUN/TAP).
-- [ ] Support config hot reload or external config loading (instead of embed-only mode).
+- [x] Support config hot reload or external config loading (instead of embed-only mode).
 - [ ] Add observability metrics (connections, throughput, packet loss, forwarding latency).
 - [ ] Add CI pipeline (build, test, artifact release).
 
