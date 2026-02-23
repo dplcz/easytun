@@ -13,7 +13,7 @@ func main() {
 	go func() {
 		log.Println(http.ListenAndServe(":10021", nil))
 	}()
-	config.InitConfig()
+	config.InitConfig("")
 	hub := transport.NewHub()
 	hub.Run(context.Background())
 }

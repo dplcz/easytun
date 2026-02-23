@@ -22,6 +22,7 @@ English | [中文](README_zh.md)
 - Supports unicast, broadcast, and multicast forwarding.
 - Separates control and data channels to reduce data path overhead.
 - Uses `sync.Pool` and batch I/O to reduce memory allocation and syscall overhead.
+- UDP data plane is encrypted and authenticated with ChaCha20-Poly1305.
 - Built-in heartbeat and read-timeout mechanism.
 - Built-in pprof endpoint on server (default `10021`).
 
@@ -57,8 +58,15 @@ English | [中文](README_zh.md)
 Packet header format:
 
 ```text
-[magic(2)][type(1)][src(4)][dst(4)][length(2)][payload]
+[magic(2)][type(1)][dst(4)][length(2)][nonce(12)][ciphertext]
 ```
+
+Encryption notes:
+
+- Data plane uses ChaCha20-Poly1305 AEAD.
+- Nonce = `src(4)` + `counter(8)`; `src` is recovered from the nonce.
+- `length` is ciphertext length (payload + 16-byte tag).
+- AAD = header without nonce (`[magic][type][dst][length]`).
 
 ## 🧰 Requirements
 
@@ -85,7 +93,8 @@ Example:
   "read_timeout": 10,
   "ping_time": 1,
   "send_workers": 4,
-  "recv_workers": 4
+  "recv_workers": 4,
+  "key": "32-byte-shared-key"
 }
 ```
 
@@ -98,6 +107,7 @@ Fields:
 - `ping_time`: heartbeat interval (seconds).
 - `send_workers`: number of client send workers.
 - `recv_workers`: number of client receive workers.
+- `key`: shared key for UDP encryption (32 bytes).
 
 ### 2) Server Config
 
@@ -230,7 +240,7 @@ docker run -d --name easytun-server \
 - [ ] Complete control-plane message handling (client `controlRecv` logic).
 - [ ] Implement P2P traversal for NAT penetration.
 - [ ] Add HTTPS support for control messages.
-- [ ] Add UDP data encryption support.
+- [x] Add UDP data encryption support.
 - [ ] Refactor server UDP RX/TX and forwarding into a configurable worker pool.
 - [ ] Add Linux client support (TUN/TAP).
 - [x] Support config hot reload or external config loading (instead of embed-only mode).

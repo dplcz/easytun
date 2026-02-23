@@ -152,7 +152,7 @@ func (c *Client) readPump(ctx context.Context, cancel context.CancelFunc) {
 		if msgType == websocket.BinaryMessage {
 			var newGp *protocol.GamePacket
 
-			err = gp.ParsePacket(c.hub.bufPool, message, true)
+			err = gp.ParseHeader(message)
 			if err != nil {
 				log.Println(err)
 				continue
@@ -162,17 +162,15 @@ func (c *Client) readPump(ctx context.Context, cancel context.CancelFunc) {
 				c.hub.mtx.Lock()
 				c.hub.Router[c.virtualIp.String()] = c
 				c.hub.mtx.Unlock()
-				newGp = protocol.NewGamePacket([4]byte{}, [4]byte{}, protocol.TypeHandshake, c.virtualIp.To4())
+				newGp = protocol.NewGamePacket([4]byte{}, [4]byte(c.virtualIp.To4()), protocol.TypeHandshake, nil)
 			default:
 				continue
 			}
 			select {
 			case c.controlChan <- newGp:
-				c.hub.bufPool.Put(gp.RawData[:0])
 			case <-ctx.Done():
 				return
 			default:
-				c.hub.bufPool.Put(gp.RawData[:0])
 				continue
 			}
 		}

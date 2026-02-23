@@ -22,6 +22,7 @@
 - 支持单播转发、广播转发、组播转发。
 - 控制通道与数据通道分离，降低数据传输开销。
 - 使用 `sync.Pool`、批量读写等方式减少内存分配和系统调用开销。
+- UDP 数据面使用 ChaCha20-Poly1305 进行加密与鉴别。
 - 内置心跳与读超时机制。
 - 服务端内置 pprof 入口（默认 `10021` 端口）。
 
@@ -57,8 +58,15 @@
 协议头格式：
 
 ```text
-[magic(2)][type(1)][src(4)][dst(4)][length(2)][payload]
+[magic(2)][type(1)][dst(4)][length(2)][nonce(12)][ciphertext]
 ```
+
+加密说明：
+
+- 数据面使用 ChaCha20-Poly1305 AEAD。
+- Nonce = `src(4)` + `counter(8)`，`src` 从 nonce 中恢复。
+- `length` 为密文长度（payload + 16 字节鉴别标签）。
+- AAD 为不含 nonce 的头部（`[magic][type][dst][length]`）。
 
 ## 🧰 环境要求
 
@@ -85,7 +93,8 @@
   "read_timeout": 10,
   "ping_time": 1,
   "send_workers": 4,
-  "recv_workers": 4
+  "recv_workers": 4,
+  "key": "32字节共享密钥"
 }
 ```
 
@@ -98,6 +107,7 @@
 - `ping_time`：心跳间隔（秒）。
 - `send_workers`：客户端发包协程数。
 - `recv_workers`：客户端收包协程数。
+- `key`：UDP 加密共享密钥（32 字节）。
 
 ### 2) 服务端配置
 
@@ -230,7 +240,7 @@ docker run -d --name easytun-server \
 - [ ] 完善控制面消息处理（客户端 `controlRecv` 逻辑）。、
 - [ ] 实现内网穿透的 P2P 。
 - [ ] 添加控制消息的 HTTPS 支持。
-- [ ] 添加 UDP 数据加密支持。
+- [x] 添加 UDP 数据加密支持。
 - [ ] 将服务端 UDP 收发/转发改造为可配置工作池。
 - [ ] 支持 Linux 客户端 TUN/TAP 实现。
 - [x] 完善配置热更新或外部配置加载能力（替代纯嵌入配置）。
