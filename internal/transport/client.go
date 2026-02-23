@@ -76,7 +76,7 @@ func NewTransport() *ClientTransport {
 	if err != nil {
 		panic(err)
 	}
-	t.localIp = net.IPv4(handshake.Payload[0], handshake.Payload[1], handshake.Payload[2], handshake.Payload[3])
+	t.localIp = handshake.Destination().To4()
 	t.bufPool.Put(handshake.RawData[:0])
 	device := tun.NewTun(config.DeviceName, t.localIp, outerChan, innerChan, t.bufPool)
 	t.device = device
