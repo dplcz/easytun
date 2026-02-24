@@ -1,16 +1,16 @@
 package protocol
 
 import (
-	"bytes"
 	"crypto/cipher"
 	"crypto/rand"
 	"easytun/internal/config"
 	"easytun/internal/errorcode"
 	"encoding/binary"
-	"golang.org/x/crypto/chacha20poly1305"
 	"net"
 	"sync"
 	"sync/atomic"
+
+	"golang.org/x/crypto/chacha20poly1305"
 )
 
 const (
@@ -27,7 +27,6 @@ const NonceLength = chacha20poly1305.NonceSize
 
 var aead cipher.AEAD
 var globalNonce uint64
-var nonceBufPool = sync.Pool{New: func() interface{} { return make([]byte, NonceLength) }}
 
 func InitChaCha() {
 	var err error
@@ -78,53 +77,34 @@ func (g *GamePacket) CalculateMs() int {
 
 func (g *GamePacket) encode(b []byte) []byte {
 	nonceVal := atomic.AddUint64(&globalNonce, 1)
-	nonceBuf := nonceBufPool.Get().([]byte)
-	nonceBuf = nonceBuf[:12]
-	copy(nonceBuf[0:4], g.src[:])
-	binary.BigEndian.PutUint64(nonceBuf[4:], nonceVal)
-
 	b = binary.BigEndian.AppendUint16(b, uint16(MagicNumber))
 	b = append(b, g.PType)
 	b = append(b, g.dst[:]...)
 	b = binary.BigEndian.AppendUint16(b, g.Length)
-	b = append(b, nonceBuf...)
+	b = append(b, g.src[:]...)
+	b = binary.BigEndian.AppendUint64(b, nonceVal)
+	nonceBuf := b[HeaderLength-NonceLength : HeaderLength]
 	if g.Length > 0 {
 		header := b[:HeaderLength-NonceLength]
 		b = aead.Seal(b, nonceBuf, g.Payload, header)
 	}
-	nonceBufPool.Put(nonceBuf)
 	return b
 }
 
 func (g *GamePacket) parse(data []byte, parsePayload bool) error {
-	var magic uint16
-
 	if len(data) < HeaderLength {
 		return errorcode.PacketTooShort
 	}
-	reader := bytes.NewReader(data)
-	nonceBuf := nonceBufPool.Get().([]byte)
-	nonceBuf = nonceBuf[:12]
-	if err := binary.Read(reader, binary.BigEndian, &magic); err != nil {
-		return err
-	}
+	magic := binary.BigEndian.Uint16(data[0:2])
 	if magic != MagicNumber {
 		return errorcode.InvalidMagic
 	}
-	if err := binary.Read(reader, binary.BigEndian, &g.PType); err != nil {
-		return err
-	}
-	if err := binary.Read(reader, binary.BigEndian, &g.dst); err != nil {
-		return err
-	}
-	if err := binary.Read(reader, binary.BigEndian, &g.Length); err != nil {
-		return err
-	}
-	if err := binary.Read(reader, binary.BigEndian, &nonceBuf); err != nil {
-		return err
-	}
+	g.PType = data[2]
+	g.dst = [4]byte(data[3:7])
+	g.Length = binary.BigEndian.Uint16(data[7:9])
+	nonceBuf := data[9 : 9+NonceLength]
 
-	g.src = [4]byte{nonceBuf[0], nonceBuf[1], nonceBuf[2], nonceBuf[3]}
+	g.src = [4]byte(nonceBuf)
 	if aead != nil {
 		if parsePayload && g.Length > 0 {
 			header := data[:HeaderLength-NonceLength]
