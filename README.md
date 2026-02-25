@@ -21,6 +21,8 @@ English | [中文](README_zh.md)
 - Client binary embeds both DLL and config file for out-of-the-box usage.
 - Supports unicast, broadcast, and multicast forwarding.
 - Separates control and data channels to reduce data path overhead.
+- Dual-layer lock-free concurrency for routing/forwarding (atomic snapshots + channel pipeline).
+- Server UDP RX/TX + forwarding runs on a worker pool.
 - Uses `sync.Pool` and batch I/O to reduce memory allocation and syscall overhead.
 - UDP data plane is encrypted and authenticated with ChaCha20-Poly1305.
 - Built-in heartbeat and read-timeout mechanism.
@@ -162,9 +164,11 @@ Client flags:
 - `-i`: broadcast interval in test mode (seconds, default `5`).
 - `-c`: Use external configuration file (configuration file path, default embedded configuration).
 
-## 🛠️ Build with Scripts
+## 🛠️ Build
 
-### Windows Client Script
+### Scripts
+
+#### Windows Client Script
 
 ```powershell
 scripts\windows_client_build.bat
@@ -175,7 +179,7 @@ The script will:
 - Generate resource file with admin manifest.
 - Build client with `-tags client` to `dist/easytun.exe`.
 
-### Linux Server Script
+#### Linux Server Script
 
 ```powershell
 scripts\linux_server_build.bat
@@ -185,8 +189,29 @@ The script will:
 
 - Cross-build Linux `amd64` server binary.
 - Attempt to build Docker image.
+- Auto-generate version tag and optionally push to registry when `REGISTRY` is set.
 
-## 🐳 Docker Deployment (Server)
+### Makefile
+
+```bash
+make server
+make client
+make docker
+make clean
+```
+
+Targets:
+
+- `server`: build Linux `amd64` server binary into `dist/`.
+- `client`: build Windows `amd64` client binary with manifest and icon.
+- `docker`: build and tag Docker image (and push if `REGISTRY` is set).
+- `clean`: remove build artifacts.
+
+### Docker
+
+Use the Makefile target `docker`, or manual build below.
+
+#### Docker Deployment (Server)
 
 ### Option A: Manual Build (Recommended)
 
@@ -241,7 +266,7 @@ docker run -d --name easytun-server \
 - [ ] Implement P2P traversal for NAT penetration.
 - [ ] Add HTTPS support for control messages.
 - [x] Add UDP data encryption support.
-- [ ] Refactor server UDP RX/TX and forwarding into a configurable worker pool.
+- [x] Refactor server UDP RX/TX and forwarding into a configurable worker pool.
 - [ ] Add Linux client support (TUN/TAP).
 - [x] Support config hot reload or external config loading (instead of embed-only mode).
 - [ ] Add observability metrics (connections, throughput, packet loss, forwarding latency).

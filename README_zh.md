@@ -21,6 +21,8 @@
 - 客户端已嵌入DLL和配置文件，开箱即用。
 - 支持单播转发、广播转发、组播转发。
 - 控制通道与数据通道分离，降低数据传输开销。
+- 服务端路由/转发使用双层无锁并发（原子快照 + 通道流水线）。
+- 服务端 UDP 收发与转发使用工作池。
 - 使用 `sync.Pool`、批量读写等方式减少内存分配和系统调用开销。
 - UDP 数据面使用 ChaCha20-Poly1305 进行加密与鉴别。
 - 内置心跳与读超时机制。
@@ -162,9 +164,11 @@ go build -tags client -o dist/easytun.exe ./cmd/client
 - `-i`：测试模式广播间隔（秒，默认 `5`）。
 - `-c`：使用外部配置文件（配置文件路径，默认使用嵌入配置）。
 
-## 🛠️ 使用脚本编译
+## 🛠️ 构建方式
 
-### Windows 客户端脚本
+### 脚本
+
+#### Windows 客户端脚本
 
 ```powershell
 scripts\windows_client_build.bat
@@ -175,7 +179,7 @@ scripts\windows_client_build.bat
 - 生成带管理员权限 manifest 的资源文件。
 - 使用 `-tags client` 编译客户端到 `dist/easytun.exe`。
 
-### Linux 服务端脚本
+#### Linux 服务端脚本
 
 ```powershell
 scripts\linux_server_build.bat
@@ -185,8 +189,29 @@ scripts\linux_server_build.bat
 
 - 交叉编译 Linux `amd64` 服务端。
 - 尝试构建 Docker 镜像。
+- 自动计算版本号并打镜像标签，若配置 `REGISTRY` 则推送。
 
-## 🐳 Docker 部署（服务端）
+### Makefile
+
+```bash
+make server
+make client
+make docker
+make clean
+```
+
+目标说明：
+
+- `server`：编译 Linux `amd64` 服务端到 `dist/`。
+- `client`：编译 Windows `amd64` 客户端（含 manifest 与图标）。
+- `docker`：构建并打标 Docker 镜像（若配置 `REGISTRY` 则推送）。
+- `clean`：清理构建产物。
+
+### Docker
+
+可使用 Makefile 的 `docker` 目标，或手动构建方式如下。
+
+#### Docker 部署（服务端）
 
 ### 方式 A：手动构建（推荐）
 
@@ -241,7 +266,7 @@ docker run -d --name easytun-server \
 - [ ] 实现内网穿透的 P2P 。
 - [ ] 添加控制消息的 HTTPS 支持。
 - [x] 添加 UDP 数据加密支持。
-- [ ] 将服务端 UDP 收发/转发改造为可配置工作池。
+- [x] 将服务端 UDP 收发/转发改造为可配置工作池。
 - [ ] 支持 Linux 客户端 TUN/TAP 实现。
 - [x] 完善配置热更新或外部配置加载能力（替代纯嵌入配置）。
 - [ ] 增加可观测性指标（连接数、吞吐、丢包、转发延迟）。
