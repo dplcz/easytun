@@ -223,6 +223,11 @@ func (h *Hub) addClient(client *Client) {
 
 	newMap := make(map[string]*Client, len(oldSnapshot.clientMap)+1)
 	newSlice := make([]*Client, 0, len(oldSnapshot.clientMap)+1)
+
+	for k, v := range oldSnapshot.clientMap {
+		newMap[k] = v
+		newSlice = append(newSlice, v)
+	}
 	newMap[client.virtualIp.String()] = client
 	newSlice = append(newSlice, client)
 	newSnapshot := &routerSnapshot{
@@ -355,6 +360,7 @@ func (h *Hub) listenUdp(ctx context.Context) {
 			cnt := msg.N                       // 这个包的实际字节数
 			srcAddr := msg.Addr.(*net.UDPAddr) // 对方地址
 			payload := msg.Buffers[0][:cnt]
+			// TODO 结构体复用
 			gp := &protocol.GamePacket{}
 			err = gp.ParsePacket(h.bufPool, payload, true)
 			if err != nil {
@@ -395,9 +401,10 @@ func (h *Hub) transfer(ctx context.Context) {
 			if ok {
 				srcClient.updateAddrCheck(tp.srcAddr)
 			}
+			// TODO 优化判断逻辑以及router key
 			switch {
 			case dst.Equal(net.IPv4bcast) || dst.To4()[3] == 255 || dst.IsMulticast():
-				if len(snapshot.clientMap) < 2 {
+				if len(snapshot.clientSlice) < 2 {
 					continue
 				}
 				p := &packet{
