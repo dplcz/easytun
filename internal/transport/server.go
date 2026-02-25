@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"bytes"
 	"context"
 	"easytun/internal/config"
 	"easytun/internal/errorcode"
@@ -149,8 +150,9 @@ func (c *Client) readPump(ctx context.Context, cancel context.CancelFunc) {
 		return nil
 	})
 	gp := &protocol.GamePacket{}
+	readBuffer := bytes.NewBuffer(make([]byte, 512))
 	for ctx.Err() == nil {
-		msgType, message, err := c.controlConn.ReadMessage()
+		msgType, reader, err := c.controlConn.NextReader()
 		if err != nil {
 			var netErr *net.OpError
 			if errors.As(err, &netErr) && netErr.Timeout() {
@@ -163,9 +165,15 @@ func (c *Client) readPump(ctx context.Context, cancel context.CancelFunc) {
 			break
 		}
 		if msgType == websocket.BinaryMessage {
+			readBuffer.Reset()
+			_, err = readBuffer.ReadFrom(reader) // ReadFrom 会一直读到 EOF，底层自动扩容/复用内存
+			if err != nil {
+				log.Println("Read buffer error:", err)
+				continue
+			}
 			var newGp *protocol.GamePacket
 
-			err = gp.ParseHeader(message)
+			err = gp.ParseHeader(readBuffer.Bytes())
 			if err != nil {
 				log.Println(err)
 				continue
