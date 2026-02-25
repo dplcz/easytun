@@ -50,6 +50,11 @@ type transferPacket struct {
 	srcAddr *net.UDPAddr
 }
 
+type routerSnapshot struct {
+	clientMap   map[string]*Client
+	clientSlice []*Client
+}
+
 type Hub struct {
 	PacketConn *ipv4.PacketConn
 	UdpConn    *net.UDPConn
@@ -58,8 +63,8 @@ type Hub struct {
 	transferChan chan *transferPacket
 	packetChan   chan *packet
 
-	Router map[string]*Client
-	mtx    sync.RWMutex
+	router atomic.Value
+	mtx    sync.Mutex
 
 	ipMtx    sync.Mutex
 	ipBitMap map[uint8]struct{}
@@ -85,17 +90,23 @@ func NewHub() *Hub {
 		IP:   net.IPv4(10, 0, 6, 1),
 		Mask: net.IPv4Mask(255, 255, 255, 0),
 	}
-	return &Hub{
+	h := &Hub{
 		controlChan:  make(chan *protocol.GamePacket, 16),
 		transferChan: make(chan *transferPacket, 64),
 		packetChan:   make(chan *packet, 128),
-		Router:       make(map[string]*Client),
-		mtx:          sync.RWMutex{},
+		mtx:          sync.Mutex{},
 		ipMtx:        sync.Mutex{},
 		ipBitMap:     make(map[uint8]struct{}),
 		Subnet:       subnet,
 		bufPool:      &sync.Pool{New: func() interface{} { return make([]byte, 2048) }},
 	}
+	// 初始化快照
+	eSnapshot := &routerSnapshot{
+		clientMap:   make(map[string]*Client),
+		clientSlice: make([]*Client, 0),
+	}
+	h.router.Store(eSnapshot)
+	return h
 }
 
 func (c *Client) writePump(ctx context.Context, cancel context.CancelFunc) {
@@ -161,9 +172,7 @@ func (c *Client) readPump(ctx context.Context, cancel context.CancelFunc) {
 			}
 			switch gp.PType {
 			case protocol.TypeHandshake:
-				c.hub.mtx.Lock()
-				c.hub.Router[c.virtualIp.String()] = c
-				c.hub.mtx.Unlock()
+				c.hub.addClient(c)
 				newGp = protocol.NewGamePacket([4]byte{}, [4]byte(c.virtualIp.To4()), protocol.TypeHandshake, nil)
 			default:
 				continue
@@ -199,6 +208,47 @@ func (h *Hub) Run(ctx context.Context) {
 	}
 }
 
+func (h *Hub) addClient(client *Client) {
+	h.mtx.Lock()
+	defer h.mtx.Unlock()
+	oldSnapshot := h.router.Load().(*routerSnapshot)
+
+	newMap := make(map[string]*Client, len(oldSnapshot.clientMap)+1)
+	newSlice := make([]*Client, 0, len(oldSnapshot.clientMap)+1)
+	newMap[client.virtualIp.String()] = client
+	newSlice = append(newSlice, client)
+	newSnapshot := &routerSnapshot{
+		clientMap:   newMap,
+		clientSlice: newSlice,
+	}
+	h.router.Store(newSnapshot)
+}
+
+func (h *Hub) removeClient(client *Client) {
+	h.mtx.Lock()
+	defer h.mtx.Unlock()
+
+	oldSnapshot := h.router.Load().(*routerSnapshot)
+	vIp := client.virtualIp.String()
+	if _, exists := oldSnapshot.clientMap[vIp]; !exists {
+		return
+	}
+
+	newMap := make(map[string]*Client, len(oldSnapshot.clientMap))
+	newSlice := make([]*Client, 0, len(oldSnapshot.clientMap))
+	for k, v := range oldSnapshot.clientMap {
+		if k != vIp {
+			newMap[k] = v
+			newSlice = append(newSlice, v)
+		}
+	}
+	newSnapshot := &routerSnapshot{
+		clientMap:   newMap,
+		clientSlice: newSlice,
+	}
+	h.router.Store(newSnapshot)
+}
+
 func (h *Hub) serverWS(ctx context.Context, w http.ResponseWriter, r *http.Request) {
 	log.Println("接收到 WebSocket 连接")
 	conn, err := upgrader.Upgrade(w, r, nil)
@@ -223,10 +273,7 @@ func (h *Hub) serverWS(ctx context.Context, w http.ResponseWriter, r *http.Reque
 		h.ipMtx.Lock()
 		delete(h.ipBitMap, client.virtualIp[3])
 		h.ipMtx.Unlock()
-		h.mtx.Lock()
-		close(client.packetChan)
-		delete(h.Router, client.virtualIp.String())
-		h.mtx.Unlock()
+		h.removeClient(client)
 		return
 	}
 }
@@ -336,20 +383,16 @@ func (h *Hub) transfer(ctx context.Context) {
 		case tp := <-h.transferChan:
 			dst := tp.gp.Destination()
 			src := tp.gp.SourceVirtualIp()
-			h.mtx.RLock()
-			srcClient, ok := h.Router[src.String()]
-			h.mtx.RUnlock()
+			snapshot := h.router.Load().(*routerSnapshot)
+			srcClient, ok := snapshot.clientMap[src.String()]
 			if ok {
 				srcClient.updateAddrCheck(tp.srcAddr)
 			}
 			switch {
 			case dst.Equal(net.IPv4bcast) || dst.To4()[3] == 255 || dst.IsMulticast():
-				h.mtx.RLock()
-				if len(h.Router) < 2 {
-					h.mtx.RUnlock()
+				if len(snapshot.clientMap) < 2 {
 					continue
 				}
-				h.mtx.RUnlock()
 				p := &packet{
 					data:      tp.gp.RawData,
 					broadcast: true,
@@ -364,9 +407,7 @@ func (h *Hub) transfer(ctx context.Context) {
 					h.bufPool.Put(p.data[:0])
 				}
 			case h.Subnet.Contains(dst) && !dst.IsLoopback():
-				h.mtx.RLock()
-				client, ok := h.Router[dst.String()]
-				h.mtx.RUnlock()
+				client, ok := snapshot.clientMap[dst.String()]
 				if ok {
 					p := &packet{
 						broadcast: false,
@@ -407,10 +448,10 @@ func (h *Hub) writeUdpPacket(ctx context.Context) {
 					break DrainLoop
 				}
 			}
+			snapshot := h.router.Load().(*routerSnapshot)
 			for _, p := range packetBatch {
 				if p.broadcast {
-					h.mtx.RLock()
-					for _, client := range h.Router {
+					for _, client := range snapshot.clientSlice {
 						addr := client.dataAddr.Load()
 						if addr == nil {
 							continue
@@ -420,7 +461,6 @@ func (h *Hub) writeUdpPacket(ctx context.Context) {
 							Addr:    addr,
 						})
 					}
-					h.mtx.RUnlock()
 				} else {
 					msgs = append(msgs, ipv4.Message{
 						Buffers: [][]byte{p.data},
