@@ -384,7 +384,6 @@ func (h *Hub) listenUdp(ctx context.Context) {
 	}
 }
 
-// TODO 修改为工作池
 func (h *Hub) transfer(ctx context.Context) {
 	for {
 		select {
