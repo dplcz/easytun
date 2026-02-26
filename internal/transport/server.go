@@ -480,13 +480,14 @@ func (h *Hub) writeUdpPacket(ctx context.Context) {
 			snapshot := h.router.Load().(*routerSnapshot)
 			for _, p := range packetBatch {
 				if p.broadcast {
+					bBuf := [][]byte{p.data}
 					for _, client := range snapshot.clientSlice {
 						addr := client.dataAddr.Load()
 						if addr == nil {
 							continue
 						}
 						msgs = append(msgs, ipv4.Message{
-							Buffers: [][]byte{p.data},
+							Buffers: bBuf,
 							Addr:    addr,
 						})
 					}
