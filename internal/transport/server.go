@@ -6,12 +6,14 @@ import (
 	"easytun/internal/config"
 	"easytun/internal/errorcode"
 	"easytun/internal/protocol"
+	"easytun/internal/util"
 	"errors"
 	"fmt"
 	"log"
 	"math/rand/v2"
 	"net"
 	"net/http"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -52,7 +54,7 @@ type transferPacket struct {
 }
 
 type routerSnapshot struct {
-	clientMap   map[string]*Client
+	clientMap   map[[4]byte]*Client
 	clientSlice []*Client
 }
 
@@ -70,8 +72,10 @@ type Hub struct {
 	ipMtx    sync.Mutex
 	ipBitMap map[uint8]struct{}
 
-	Subnet  *net.IPNet
-	bufPool *sync.Pool
+	Subnet     *net.IPNet
+	bufPool    *sync.Pool
+	tpPool     *sync.Pool
+	packetPool *sync.Pool
 }
 
 func newClient(hub *Hub, controlConn *websocket.Conn, dataAddr *net.UDPAddr, virtualIp net.IP) *Client {
@@ -100,10 +104,12 @@ func NewHub() *Hub {
 		ipBitMap:     make(map[uint8]struct{}),
 		Subnet:       subnet,
 		bufPool:      &sync.Pool{New: func() interface{} { return make([]byte, 2048) }},
+		tpPool:       &sync.Pool{New: func() interface{} { return &transferPacket{gp: &protocol.GamePacket{}} }},
+		packetPool:   &sync.Pool{New: func() interface{} { return &packet{} }},
 	}
 	// 初始化快照
 	eSnapshot := &routerSnapshot{
-		clientMap:   make(map[string]*Client),
+		clientMap:   make(map[[4]byte]*Client),
 		clientSlice: make([]*Client, 0),
 	}
 	h.router.Store(eSnapshot)
@@ -221,14 +227,14 @@ func (h *Hub) addClient(client *Client) {
 	defer h.mtx.Unlock()
 	oldSnapshot := h.router.Load().(*routerSnapshot)
 
-	newMap := make(map[string]*Client, len(oldSnapshot.clientMap)+1)
+	newMap := make(map[[4]byte]*Client, len(oldSnapshot.clientMap)+1)
 	newSlice := make([]*Client, 0, len(oldSnapshot.clientMap)+1)
 
 	for k, v := range oldSnapshot.clientMap {
 		newMap[k] = v
 		newSlice = append(newSlice, v)
 	}
-	newMap[client.virtualIp.String()] = client
+	newMap[util.IpToKey(client.virtualIp)] = client
 	newSlice = append(newSlice, client)
 	newSnapshot := &routerSnapshot{
 		clientMap:   newMap,
@@ -242,12 +248,12 @@ func (h *Hub) removeClient(client *Client) {
 	defer h.mtx.Unlock()
 
 	oldSnapshot := h.router.Load().(*routerSnapshot)
-	vIp := client.virtualIp.String()
+	vIp := util.IpToKey(client.virtualIp)
 	if _, exists := oldSnapshot.clientMap[vIp]; !exists {
 		return
 	}
 
-	newMap := make(map[string]*Client, len(oldSnapshot.clientMap))
+	newMap := make(map[[4]byte]*Client, len(oldSnapshot.clientMap))
 	newSlice := make([]*Client, 0, len(oldSnapshot.clientMap))
 	for k, v := range oldSnapshot.clientMap {
 		if k != vIp {
@@ -322,23 +328,16 @@ func (h *Hub) listenUdp(ctx context.Context) {
 	batchSize := 64
 	msgs := make([]ipv4.Message, batchSize)
 
-	go func() {
-		for i := 0; i < 2; i++ {
-			go h.transfer(ctx)
-		}
-		select {
-		case <-ctx.Done():
-		}
-	}()
+	workerCount := runtime.NumCPU() * 2
 
-	go func() {
-		for i := 0; i < 2; i++ {
-			go h.writeUdpPacket(ctx)
-		}
-		select {
-		case <-ctx.Done():
-		}
-	}()
+	for i := 0; i < 2; i++ {
+		go h.transfer(ctx)
+	}
+	log.Println("启动 2 个处理协程")
+	for i := 0; i < workerCount; i++ {
+		go h.writeUdpPacket(ctx)
+	}
+	log.Printf("启动 %d 个发送协程\n", workerCount)
 
 	log.Println("开始监听UDP...")
 	for i := range msgs {
@@ -360,31 +359,41 @@ func (h *Hub) listenUdp(ctx context.Context) {
 			cnt := msg.N                       // 这个包的实际字节数
 			srcAddr := msg.Addr.(*net.UDPAddr) // 对方地址
 			payload := msg.Buffers[0][:cnt]
-			// TODO 结构体复用
-			gp := &protocol.GamePacket{}
+
+			consume := false
+			tp := h.tpPool.Get().(*transferPacket)
+			tp.srcAddr = srcAddr
+			gp := tp.gp
 			err = gp.ParsePacket(h.bufPool, payload, true)
 			if err != nil {
 				log.Println(err)
-				continue
+				goto CleanUp
 			}
 			if cnt < int(gp.Length) {
 				log.Println(errorcode.PayloadMismatch)
-				continue
+				goto CleanUp
 			}
 			if gp.PType != protocol.TypeData {
 				log.Println(errorcode.PayloadMismatch)
-				continue
-			}
-			tp := &transferPacket{
-				gp:      gp,
-				srcAddr: srcAddr,
+				goto CleanUp
 			}
 			select {
 			case h.transferChan <- tp:
+				consume = true
 			case <-ctx.Done():
+				h.bufPool.Put(tp.gp.RawData[:0])
+				h.tpPool.Put(tp)
 				return
 			default:
 				log.Println("transferChan已满")
+				goto CleanUp
+			}
+		CleanUp:
+			if !consume {
+				h.bufPool.Put(tp.gp.RawData[:0])
+				gp.RawData = nil
+				tp.srcAddr = nil
+				h.tpPool.Put(tp)
 			}
 		}
 	}
@@ -394,51 +403,57 @@ func (h *Hub) transfer(ctx context.Context) {
 	for {
 		select {
 		case tp := <-h.transferChan:
+			consume := false
 			dst := tp.gp.Destination()
 			src := tp.gp.SourceVirtualIp()
 			snapshot := h.router.Load().(*routerSnapshot)
-			srcClient, ok := snapshot.clientMap[src.String()]
+			srcClient, ok := snapshot.clientMap[util.IpToKey(src)]
 			if ok {
 				srcClient.updateAddrCheck(tp.srcAddr)
 			}
-			// TODO 优化判断逻辑以及router key
 			switch {
 			case dst.Equal(net.IPv4bcast) || dst.To4()[3] == 255 || dst.IsMulticast():
 				if len(snapshot.clientSlice) < 2 {
-					continue
+					break
 				}
-				p := &packet{
-					data:      tp.gp.RawData,
-					broadcast: true,
-				}
+				p := h.packetPool.Get().(*packet)
+				p.data = tp.gp.RawData
+				p.broadcast = true
 				select {
 				case h.packetChan <- p:
+					consume = true
 				case <-ctx.Done():
-					h.bufPool.Put(p.data[:0])
+					h.packetPool.Put(p)
 					return
 				default:
 					log.Println("packetChan已满")
-					h.bufPool.Put(p.data[:0])
+					h.packetPool.Put(p)
 				}
 			case h.Subnet.Contains(dst) && !dst.IsLoopback():
-				client, ok := snapshot.clientMap[dst.String()]
+				client, ok := snapshot.clientMap[util.IpToKey(dst)]
 				if ok {
-					p := &packet{
-						broadcast: false,
-						data:      tp.gp.RawData,
-						dstAddr:   client.dataAddr.Load(),
-					}
+					p := h.packetPool.Get().(*packet)
+					p.data = tp.gp.RawData
+					p.broadcast = false
+					p.dstAddr = client.dataAddr.Load()
 					select {
 					case h.packetChan <- p:
+						consume = true
 					case <-ctx.Done():
-						h.bufPool.Put(p.data[:0])
+						h.packetPool.Put(p)
 						return
 					default:
 						log.Println("packetChan已满")
-						h.bufPool.Put(p.data[:0])
+						h.packetPool.Put(p)
 					}
 				}
 			}
+			if !consume {
+				h.bufPool.Put(tp.gp.RawData[:0])
+			}
+			tp.gp.RawData = nil
+			tp.srcAddr = nil
+			h.tpPool.Put(tp)
 		case <-ctx.Done():
 			return
 		}
@@ -488,6 +503,9 @@ func (h *Hub) writeUdpPacket(ctx context.Context) {
 			}
 			for i, p := range packetBatch {
 				h.bufPool.Put(p.data[:0])
+				p.data = nil
+				p.dstAddr = nil
+				h.packetPool.Put(p)
 				packetBatch[i] = nil
 			}
 			packetBatch = packetBatch[:0]

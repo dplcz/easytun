@@ -114,10 +114,7 @@ func (g *GamePacket) parse(data []byte, parsePayload bool) error {
 				return err
 			}
 			g.Payload = decrypted
-			g.RawData = data
 		}
-	} else {
-		g.RawData = data
 	}
 
 	return nil
@@ -155,5 +152,6 @@ func (g *GamePacket) ParsePacket(pool *sync.Pool, content []byte, parsePayload b
 	}
 	data = data[:len(content)]
 	copy(data, content)
+	g.RawData = data
 	return g.parse(data, parsePayload)
 }
