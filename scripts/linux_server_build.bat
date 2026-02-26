@@ -50,8 +50,7 @@ echo [4/4] 正在计算新版本号并处理镜像标签...
 
 :: 使用内嵌 PowerShell 获取当前 Docker 中符合 vX.X 格式的最新版本并自动 +1
 :: 如果没有任何历史版本，默认返回 v1.0
-for /f "usebackq tokens=*" %%i in (`powershell -NoProfile -Command "$tag = git describe --tags --match 'v*' --abbrev=0 2>$null; if ($LASTEXITCODE -eq 0 -and $tag -match '^v\d+\.\d+') { $parts = ($tag -replace '^v','').Split('.'); $parts[-1] = [int]$parts[-1] + 1; 'v' + ($parts -join '.') } else { 'v1.0' }"`) do set NEW_TAG=%%i
-
+for /f "usebackq tokens=*" %%i in (`powershell -NoProfile -Command "$uri = 'https://hub.docker.com/v2/repositories/%REGISTRY%/%BIN_NAME%/tags/?page_size=100'; try { $tags = (Invoke-RestMethod -Uri $uri -ErrorAction Stop).results.name | Where-Object { $_ -match '^v\d+\.\d+' }; if ($tags) { $latest = $tags | Sort-Object { [version]($_ -replace '^v','') } -Descending | Select-Object -First 1; $parts = ($latest -replace '^v','').Split('.'); $parts[-1] = [int]$parts[-1] + 1; 'v' + ($parts -join '.') } else { 'v1.0' } } catch { 'v1.0' }"`) do set NEW_TAG=%%i
 echo ==========================================
 echo 自动分配的新版本号: %NEW_TAG%
 echo ==========================================
