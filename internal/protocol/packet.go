@@ -86,7 +86,11 @@ func (g *GamePacket) encode(b []byte) []byte {
 	nonceBuf := b[HeaderLength-NonceLength : HeaderLength]
 	if g.Length > 0 {
 		header := b[:HeaderLength-NonceLength]
-		b = aead.Seal(b, nonceBuf, g.Payload, header)
+		if aead != nil {
+			b = aead.Seal(b, nonceBuf, g.Payload, header)
+		} else {
+			b = append(b, g.Payload...)
+		}
 	}
 	return b
 }
@@ -154,4 +158,22 @@ func (g *GamePacket) ParsePacket(pool *sync.Pool, content []byte, parsePayload b
 	copy(data, content)
 	g.RawData = data
 	return g.parse(data, parsePayload)
+}
+
+func (g *GamePacket) ParseControl(data []byte) error {
+	if len(data) < HeaderLength {
+		return errorcode.PacketTooShort
+	}
+	magic := binary.BigEndian.Uint16(data[0:2])
+	if magic != MagicNumber {
+		return errorcode.InvalidMagic
+	}
+	g.PType = data[2]
+	g.dst = [4]byte(data[3:7])
+	g.Length = binary.BigEndian.Uint16(data[7:9])
+	nonceBuf := data[9 : 9+NonceLength]
+
+	g.src = [4]byte(nonceBuf)
+	g.Payload = data[9+NonceLength:]
+	return nil
 }
