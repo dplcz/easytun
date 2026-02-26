@@ -24,6 +24,8 @@ import (
 )
 
 type ClientTransport struct {
+	natType uint8
+
 	device tun.Device
 
 	FromTun chan []byte
@@ -76,6 +78,11 @@ func NewTransport() *ClientTransport {
 	if err != nil {
 		panic(err)
 	}
+	natType, err := util.GetNatType()
+	if err != nil {
+		panic(err)
+	}
+	t.natType = natType
 	t.localIp = handshake.Destination().To4()
 	t.bufPool.Put(handshake.RawData[:0])
 	device := tun.NewTun(config.DeviceName, t.localIp, outerChan, innerChan, t.bufPool)
@@ -97,7 +104,8 @@ func (t *ClientTransport) connectServer() error {
 
 	serverAddr, _ := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", config.ServerIp, config.ServerPort))
 	t.serverAddr = serverAddr
-	conn, err := net.DialUDP("udp", nil, serverAddr)
+	localAddr, _ := net.ResolveUDPAddr("udp", ":0")
+	conn, err := net.ListenUDP("udp", localAddr)
 	conn.SetReadBuffer(4 * 1024 * 1024)
 	conn.SetWriteBuffer(4 * 1024 * 1024)
 	if err != nil {
@@ -300,7 +308,7 @@ func (t *ClientTransport) packetSend(ctx context.Context) {
 				dstIp := net.IP(p[16:20])
 				gp := protocol.NewGamePacket([4]byte(t.localIp.To4()), [4]byte(dstIp), protocol.TypeData, p)
 				data := gp.EncodePacket(t.bufPool)
-				_, err := t.dataConn.Write(data)
+				_, err := t.dataConn.WriteToUDP(data, t.serverAddr)
 				t.bufPool.Put(p[:0])
 				t.bufPool.Put(data)
 				if err != nil {

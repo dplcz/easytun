@@ -37,6 +37,8 @@ type packet struct {
 }
 
 type Client struct {
+	natType uint8
+
 	hub *Hub
 
 	controlConn *websocket.Conn
