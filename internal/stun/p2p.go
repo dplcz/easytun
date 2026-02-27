@@ -1,9 +1,12 @@
 package stun
 
 import (
+	"fmt"
 	"net"
 	"sync/atomic"
 	"time"
+
+	s "github.com/dplcz/go-test-nat/stun"
 )
 
 const (
@@ -71,4 +74,21 @@ func (t *P2PTunnel) ChangeStatus(delta uint32) {
 }
 func (t *P2PTunnel) GetStatus() uint32 {
 	return atomic.LoadUint32(&t.Status)
+}
+
+func GetNatType() (uint8, error) {
+	natType, _, _, err := s.GetIpInfo()
+	if err != nil {
+		return 0, err
+	}
+	switch natType {
+	case s.Blocked:
+		return TypeBlock, nil
+	case s.FullCone, s.RestrictNAT, s.RestrictPortNAT:
+		return TypeCone, nil
+	case s.SymmetricNAT:
+		return TypeSymmetric, nil
+	default:
+		return 0, fmt.Errorf("unknown natType %d", natType)
+	}
 }
