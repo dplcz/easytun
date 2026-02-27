@@ -351,6 +351,8 @@ func (h *Hub) listenUdp(ctx context.Context) {
 		go h.writeUdpPacket(ctx)
 	}
 	log.Printf("启动 %d 个发送协程\n", workerCount)
+	log.Println("启动 p2p 调度协程")
+	go h.handleP2PTask(ctx)
 
 	log.Println("开始监听UDP...")
 	for i := range msgs {
@@ -541,7 +543,7 @@ func (h *Hub) writeUdpPacket(ctx context.Context) {
 func (h *Hub) ifEstablish(src, dst [4]byte, srcNat, dstNat uint8) bool {
 	key := [8]byte{src[0], src[1], src[2], src[3], dst[0], dst[1], dst[2], dst[3]}
 	tunnel, ok := h.p2pTunnel[key]
-	if !ok && srcNat == stun.TypeCone && dstNat == stun.TypeCone {
+	if !ok {
 		return true
 	}
 	if tunnel.GetStatus() == stun.TunnelFailed && tunnel.GetRetryTimes() < 3 {
@@ -559,7 +561,7 @@ func (h *Hub) newP2PTask(ctx context.Context, srcVip, dstVip [4]byte, srcAddr, d
 	}
 	select {
 	case h.p2pTaskChan <- newTask:
-		log.Printf("创建新的P2P任务 From: %s to %s\n", srcVip, dstVip)
+		log.Println("创建新的P2P任务 From: ", srcVip, "to", dstVip)
 	case <-ctx.Done():
 		return
 	default:
@@ -589,8 +591,8 @@ func (h *Hub) handleP2PTask(ctx context.Context) {
 				if !srcOk || !dstOk {
 					continue
 				}
-				srcClient.controlChan <- protocol.NewGamePacket([4]byte{}, task.SrcVip, protocol.TypeP2PCommand, util.UDPAddrToBytes(dstClient.dataAddr.Load(), dstClient.natType))
-				dstClient.controlChan <- protocol.NewGamePacket([4]byte{}, task.DstVip, protocol.TypeP2PCommand, util.UDPAddrToBytes(srcClient.dataAddr.Load(), srcClient.natType))
+				srcClient.controlChan <- protocol.NewGamePacket(task.DstVip, task.SrcVip, protocol.TypeP2PCommand, util.UDPAddrToBytes(dstClient.dataAddr.Load(), dstClient.natType))
+				dstClient.controlChan <- protocol.NewGamePacket(task.SrcVip, task.DstVip, protocol.TypeP2PCommand, util.UDPAddrToBytes(srcClient.dataAddr.Load(), srcClient.natType))
 				newT.ChangeStatus(1)
 			} else {
 				srcClient, srcOk = snapShot.clientMap[task.SrcVip]
@@ -598,8 +600,8 @@ func (h *Hub) handleP2PTask(ctx context.Context) {
 				if !srcOk || !dstOk {
 					continue
 				}
-				srcClient.controlChan <- protocol.NewGamePacket([4]byte{}, task.SrcVip, protocol.TypeP2PCommand, util.UDPAddrToBytes(dstClient.dataAddr.Load(), dstClient.natType))
-				dstClient.controlChan <- protocol.NewGamePacket([4]byte{}, task.DstVip, protocol.TypeP2PCommand, util.UDPAddrToBytes(srcClient.dataAddr.Load(), srcClient.natType))
+				srcClient.controlChan <- protocol.NewGamePacket(task.DstVip, task.SrcVip, protocol.TypeP2PCommand, util.UDPAddrToBytes(dstClient.dataAddr.Load(), dstClient.natType))
+				dstClient.controlChan <- protocol.NewGamePacket(task.SrcVip, task.DstVip, protocol.TypeP2PCommand, util.UDPAddrToBytes(srcClient.dataAddr.Load(), srcClient.natType))
 				newT.ChangeStatus(^uint32(1))
 			}
 		case <-ctx.Done():

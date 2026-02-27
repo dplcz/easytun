@@ -1,6 +1,7 @@
 package stun
 
 import (
+	"log"
 	"net"
 	"sync/atomic"
 	"time"
@@ -32,6 +33,9 @@ type P2PStatus struct {
 
 func (s *P2PStatus) UpdateLastSeen(established bool) {
 	atomic.StoreInt64(&s.LastSeen, time.Now().Unix())
+	if s.Established.Load() == false && established {
+		log.Println("建立 p2p 连接成功...")
+	}
 	s.Established.Store(established)
 }
 

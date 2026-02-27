@@ -67,7 +67,6 @@ func NewTransport() *ClientTransport {
 	controlRecvChan := make(chan *protocol.GamePacket, 16)
 	controlSendChan := make(chan *protocol.GamePacket, 16)
 	t := &ClientTransport{
-		natType:         stun.TypeCone,
 		FromTun:         outerChan,
 		FromNet:         innerChan,
 		ControlRecvChan: controlRecvChan,
@@ -77,13 +76,12 @@ func NewTransport() *ClientTransport {
 		}},
 	}
 
-	//natType, err := util.GetNatType()
-	//if err != nil {
-	//	panic(err)
-	//}
-	//t.natType = natType
-
-	err := t.connectServer()
+	natType, err := util.GetNatType()
+	if err != nil {
+		panic(err)
+	}
+	t.natType = natType
+	err = t.connectServer()
 	if err != nil {
 		panic(err)
 	}
@@ -149,7 +147,7 @@ func (t *ClientTransport) handshake() (*protocol.GamePacket, error) {
 func (t *ClientTransport) ListenAndServe(ctx context.Context, cancel context.CancelFunc, testFlag bool, testSecond *time.Duration) {
 
 	wg := sync.WaitGroup{}
-	wg.Add(6)
+	wg.Add(7)
 
 	go func() {
 		defer wg.Done()
@@ -204,6 +202,11 @@ func (t *ClientTransport) ListenAndServe(ctx context.Context, cancel context.Can
 			t.testBroadCast(ctx, *testSecond)
 		}()
 	}
+	go func() {
+		defer wg.Done()
+		t.handleP2P(ctx)
+	}()
+
 	wg.Wait()
 }
 
@@ -254,7 +257,7 @@ func (t *ClientTransport) controlRecv(ctx context.Context) {
 			}
 			switch gp.PType {
 			case protocol.TypeP2PCommand:
-				log.Printf("收到向 %s:%d 打洞的命令\n", gp.Payload[:5], gp.Payload[5:7])
+				t.addP2P([4]byte(gp.SourceVirtualIp().To4()), util.BytesToIP(gp.Payload[:6]), gp.Payload[6])
 			default:
 				continue
 			}
@@ -319,8 +322,10 @@ func (t *ClientTransport) packetSend(ctx context.Context) {
 				status, ok := snapshot[[4]byte(dstIp)]
 				if !ok {
 					_, err = t.dataConn.WriteToUDP(data, t.serverAddr)
-				} else {
+				} else if status.Established.Load() {
 					_, err = t.dataConn.WriteToUDP(data, status.DstAddr)
+				} else {
+					_, err = t.dataConn.WriteToUDP(data, t.serverAddr)
 				}
 				t.bufPool.Put(p[:0])
 				t.bufPool.Put(data)
@@ -375,6 +380,13 @@ func (t *ClientTransport) packetRecv(ctx context.Context) {
 					t.bufPool.Put(gp.RawData[:0])
 				}
 			case protocol.TypePing:
+				snapshot := t.p2pRouter.Load().(map[[4]byte]*stun.P2PStatus)
+
+				srcVIp := gp.SourceVirtualIp().To4()
+				status, ok := snapshot[[4]byte(srcVIp)]
+				if ok {
+					status.DstAddr = addr
+				}
 				_, err = t.dataConn.WriteToUDP(pongGp.EncodePacket(t.bufPool, true), addr)
 				t.bufPool.Put(pongGp.RawData[:0])
 				if err != nil {
@@ -383,12 +395,13 @@ func (t *ClientTransport) packetRecv(ctx context.Context) {
 				}
 			case protocol.TypePong:
 				snapshot := t.p2pRouter.Load().(map[[4]byte]*stun.P2PStatus)
-				status, ok := snapshot[[4]byte(gp.SourceVirtualIp())]
+				status, ok := snapshot[[4]byte(gp.SourceVirtualIp().To4())]
 				if !ok {
 					continue
 				}
+				status.DstAddr = addr
 				status.UpdateLastSeen(true)
-				log.Println("收到 pong 来自: ", gp.SourceVirtualIp(), status.DstAddr)
+				t.bufPool.Put(gp.RawData[:0])
 			}
 
 		}
@@ -430,6 +443,7 @@ func (t *ClientTransport) handleP2P(ctx context.Context) {
 	}
 }
 
+// 优化对称NAT的预测
 func (t *ClientTransport) punch(data []byte, status *stun.P2PStatus) error {
 	switch status.DstNatType {
 	case stun.TypeCone:
@@ -440,11 +454,12 @@ func (t *ClientTransport) punch(data []byte, status *stun.P2PStatus) error {
 	case stun.TypeSymmetric:
 		dstIp := status.DstAddr.IP
 		dstPort := status.DstAddr.Port
-		for i := 0; i < 20; i++ {
+		for i := -100; i < 200; i++ {
 			_, err := t.dataConn.WriteToUDP(data, &net.UDPAddr{IP: dstIp, Port: dstPort + i})
 			if err != nil {
 				return err
 			}
+			time.Sleep(time.Millisecond * 10)
 		}
 	default:
 		log.Println("暂不支持的NAT类型: ", status.DstNatType)
@@ -452,11 +467,12 @@ func (t *ClientTransport) punch(data []byte, status *stun.P2PStatus) error {
 	return nil
 }
 
-func (t *ClientTransport) addP2P(vIp [4]byte, addr *net.UDPAddr) {
+func (t *ClientTransport) addP2P(vIp [4]byte, addr *net.UDPAddr, natType uint8) {
 	t.routerMtx.Lock()
 	defer t.routerMtx.Unlock()
+	log.Println("尝试与 ", vIp, " 建立 p2p 连接")
 	oldSnapshot := t.p2pRouter.Load().(map[[4]byte]*stun.P2PStatus)
-	newP2P := &stun.P2PStatus{DstAddr: addr, LastSeen: time.Now().Unix()}
+	newP2P := &stun.P2PStatus{DstAddr: addr, LastSeen: time.Now().Unix(), DstNatType: natType}
 	newMap := make(map[[4]byte]*stun.P2PStatus, len(oldSnapshot)+1)
 	for k, v := range oldSnapshot {
 		newMap[k] = v
@@ -468,6 +484,7 @@ func (t *ClientTransport) addP2P(vIp [4]byte, addr *net.UDPAddr) {
 func (t *ClientTransport) removeP2P(vIp [4]byte) {
 	t.routerMtx.Lock()
 	defer t.routerMtx.Unlock()
+	log.Println("断开与 ", vIp, " p2p 连接")
 	oldSnapshot := t.p2pRouter.Load().(map[[4]byte]*stun.P2PStatus)
 	newMap := make(map[[4]byte]*stun.P2PStatus, len(oldSnapshot)-1)
 	for k, v := range oldSnapshot {
