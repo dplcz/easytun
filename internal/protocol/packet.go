@@ -18,6 +18,7 @@ const (
 	TypePing
 	TypePong
 	TypeData
+	TypeP2PCommand
 )
 
 const MagicNumber = 0xDAAA
@@ -75,7 +76,7 @@ func (g *GamePacket) CalculateMs() int {
 
 // [magic 2][pType 1][dst 4][length 2][nonce 12(src 4 + label 8)][payload]
 
-func (g *GamePacket) encode(b []byte) []byte {
+func (g *GamePacket) encode(b []byte, control bool) []byte {
 	nonceVal := atomic.AddUint64(&globalNonce, 1)
 	b = binary.BigEndian.AppendUint16(b, uint16(MagicNumber))
 	b = append(b, g.PType)
@@ -86,7 +87,7 @@ func (g *GamePacket) encode(b []byte) []byte {
 	nonceBuf := b[HeaderLength-NonceLength : HeaderLength]
 	if g.Length > 0 {
 		header := b[:HeaderLength-NonceLength]
-		if aead != nil {
+		if !control && aead != nil {
 			b = aead.Seal(b, nonceBuf, g.Payload, header)
 		} else {
 			b = append(b, g.Payload...)
@@ -132,7 +133,7 @@ func (g *GamePacket) SourceVirtualIp() net.IP {
 	return net.IPv4(g.src[0], g.src[1], g.src[2], g.src[3])
 }
 
-func (g *GamePacket) EncodePacket(pool *sync.Pool) []byte {
+func (g *GamePacket) EncodePacket(pool *sync.Pool, control bool) []byte {
 	dataLength := int(g.Length + HeaderLength)
 	data := pool.Get().([]byte)
 	if cap(data) < dataLength {
@@ -140,7 +141,7 @@ func (g *GamePacket) EncodePacket(pool *sync.Pool) []byte {
 		data = make([]byte, dataLength)
 	}
 	data = data[:0]
-	data = g.encode(data)
+	data = g.encode(data, control)
 	return data
 }
 

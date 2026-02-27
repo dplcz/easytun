@@ -6,6 +6,7 @@ import (
 	"easytun/internal/config"
 	"easytun/internal/errorcode"
 	"easytun/internal/protocol"
+	"easytun/internal/stun"
 	"easytun/internal/util"
 	"errors"
 	"fmt"
@@ -58,6 +59,7 @@ type transferPacket struct {
 type routerSnapshot struct {
 	clientMap   map[[4]byte]*Client
 	clientSlice []*Client
+	clientP2P   map[[8]byte]*stun.P2PTunnel
 }
 
 type Hub struct {
@@ -67,9 +69,11 @@ type Hub struct {
 	controlChan  chan *protocol.GamePacket
 	transferChan chan *transferPacket
 	packetChan   chan *packet
+	p2pTaskChan  chan stun.P2PTask
 
-	router atomic.Value
-	mtx    sync.Mutex
+	router    atomic.Value
+	p2pTunnel map[[8]byte]*stun.P2PTunnel
+	mtx       sync.Mutex
 
 	ipMtx    sync.Mutex
 	ipBitMap map[uint8]struct{}
@@ -101,6 +105,8 @@ func NewHub() *Hub {
 		controlChan:  make(chan *protocol.GamePacket, 16),
 		transferChan: make(chan *transferPacket, 64),
 		packetChan:   make(chan *packet, 128),
+		p2pTaskChan:  make(chan stun.P2PTask, 32),
+		p2pTunnel:    make(map[[8]byte]*stun.P2PTunnel),
 		mtx:          sync.Mutex{},
 		ipMtx:        sync.Mutex{},
 		ipBitMap:     make(map[uint8]struct{}),
@@ -138,7 +144,7 @@ func (c *Client) writePump(ctx context.Context, cancel context.CancelFunc) {
 				cancel()
 				return
 			}
-			data := gp.EncodePacket(c.hub.bufPool)
+			data := gp.EncodePacket(c.hub.bufPool, true)
 			w.Write(data)
 			c.hub.bufPool.Put(data[:0])
 			if err := w.Close(); err != nil {
@@ -181,13 +187,19 @@ func (c *Client) readPump(ctx context.Context, cancel context.CancelFunc) {
 			}
 			var newGp *protocol.GamePacket
 
-			err = gp.ParseHeader(readBuffer.Bytes())
+			err = gp.ParseControl(readBuffer.Bytes())
 			if err != nil {
 				log.Println(err)
 				continue
 			}
 			switch gp.PType {
 			case protocol.TypeHandshake:
+				if len(gp.Payload) < 1 {
+					c.natType = stun.TypeUnknown
+				} else {
+					c.natType = gp.Payload[0]
+					log.Printf("Virtual Ip: %s ,NAT type: %d", c.virtualIp.String(), c.natType)
+				}
 				c.hub.addClient(c)
 				newGp = protocol.NewGamePacket([4]byte{}, [4]byte(c.virtualIp.To4()), protocol.TypeHandshake, nil)
 			default:
@@ -271,7 +283,6 @@ func (h *Hub) removeClient(client *Client) {
 }
 
 func (h *Hub) serverWS(ctx context.Context, w http.ResponseWriter, r *http.Request) {
-	log.Println("接收到 WebSocket 连接")
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Println("升级 WebSocket 失败:", err)
@@ -401,6 +412,7 @@ func (h *Hub) listenUdp(ctx context.Context) {
 	}
 }
 
+// 处理中转
 func (h *Hub) transfer(ctx context.Context) {
 	for {
 		select {
@@ -409,7 +421,8 @@ func (h *Hub) transfer(ctx context.Context) {
 			dst := tp.gp.Destination()
 			src := tp.gp.SourceVirtualIp()
 			snapshot := h.router.Load().(*routerSnapshot)
-			srcClient, ok := snapshot.clientMap[util.IpToKey(src)]
+			srcIp := util.IpToKey(src)
+			srcClient, ok := snapshot.clientMap[srcIp]
 			if ok {
 				srcClient.updateAddrCheck(tp.srcAddr)
 			}
@@ -432,12 +445,17 @@ func (h *Hub) transfer(ctx context.Context) {
 					h.packetPool.Put(p)
 				}
 			case h.Subnet.Contains(dst) && !dst.IsLoopback():
-				client, ok := snapshot.clientMap[util.IpToKey(dst)]
+				dstIp := util.IpToKey(dst.To4())
+				client, ok := snapshot.clientMap[dstIp]
 				if ok {
+					dstAddr := client.dataAddr.Load()
+					if h.ifEstablish(srcIp, dstIp, srcClient.natType, client.natType) {
+						h.newP2PTask(ctx, srcIp, dstIp, tp.srcAddr, dstAddr)
+					}
 					p := h.packetPool.Get().(*packet)
 					p.data = tp.gp.RawData
 					p.broadcast = false
-					p.dstAddr = client.dataAddr.Load()
+					p.dstAddr = dstAddr
 					select {
 					case h.packetChan <- p:
 						consume = true
@@ -515,6 +533,77 @@ func (h *Hub) writeUdpPacket(ctx context.Context) {
 			msgs = msgs[:0]
 		case <-ctx.Done():
 			return
+		}
+	}
+}
+
+// 处理P2P
+func (h *Hub) ifEstablish(src, dst [4]byte, srcNat, dstNat uint8) bool {
+	key := [8]byte{src[0], src[1], src[2], src[3], dst[0], dst[1], dst[2], dst[3]}
+	tunnel, ok := h.p2pTunnel[key]
+	if !ok && srcNat == stun.TypeCone && dstNat == stun.TypeCone {
+		return true
+	}
+	if tunnel.GetStatus() == stun.TunnelFailed && tunnel.GetRetryTimes() < 3 {
+		return true
+	}
+	return false
+}
+
+func (h *Hub) newP2PTask(ctx context.Context, srcVip, dstVip [4]byte, srcAddr, dstAddr *net.UDPAddr) {
+	newTask := stun.P2PTask{
+		DstVip: dstVip,
+		Dst:    dstAddr,
+		SrcVip: srcVip,
+		Src:    srcAddr,
+	}
+	select {
+	case h.p2pTaskChan <- newTask:
+		log.Printf("创建新的P2P任务 From: %s to %s\n", srcVip, dstVip)
+	case <-ctx.Done():
+		return
+	default:
+		log.Println("创建P2P通道请求已满...")
+	}
+}
+
+func (h *Hub) handleP2PTask(ctx context.Context) {
+	var key1, key2 [8]byte
+	var srcClient, dstClient *Client
+	var newT *stun.P2PTunnel
+	var snapShot *routerSnapshot
+	var srcOk, dstOk, ok bool
+	for {
+		select {
+		case task := <-h.p2pTaskChan:
+			key1 = [8]byte{task.SrcVip[0], task.SrcVip[1], task.SrcVip[2], task.SrcVip[3], task.DstVip[0], task.DstVip[1], task.DstVip[2], task.DstVip[3]}
+			key2 = [8]byte{task.DstVip[0], task.DstVip[1], task.DstVip[2], task.DstVip[3], task.SrcVip[0], task.SrcVip[1], task.SrcVip[2], task.SrcVip[3]}
+			snapShot = h.router.Load().(*routerSnapshot)
+			_, ok = h.p2pTunnel[key1]
+			if !ok {
+				newT = stun.NewP2PTunnel()
+				h.p2pTunnel[key1] = newT
+				h.p2pTunnel[key2] = newT
+				srcClient, srcOk = snapShot.clientMap[task.SrcVip]
+				dstClient, dstOk = snapShot.clientMap[task.DstVip]
+				if !srcOk || !dstOk {
+					continue
+				}
+				srcClient.controlChan <- protocol.NewGamePacket([4]byte{}, task.SrcVip, protocol.TypeP2PCommand, util.UDPAddrToBytes(dstClient.dataAddr.Load(), dstClient.natType))
+				dstClient.controlChan <- protocol.NewGamePacket([4]byte{}, task.DstVip, protocol.TypeP2PCommand, util.UDPAddrToBytes(srcClient.dataAddr.Load(), srcClient.natType))
+				newT.ChangeStatus(1)
+			} else {
+				srcClient, srcOk = snapShot.clientMap[task.SrcVip]
+				dstClient, dstOk = snapShot.clientMap[task.DstVip]
+				if !srcOk || !dstOk {
+					continue
+				}
+				srcClient.controlChan <- protocol.NewGamePacket([4]byte{}, task.SrcVip, protocol.TypeP2PCommand, util.UDPAddrToBytes(dstClient.dataAddr.Load(), dstClient.natType))
+				dstClient.controlChan <- protocol.NewGamePacket([4]byte{}, task.DstVip, protocol.TypeP2PCommand, util.UDPAddrToBytes(srcClient.dataAddr.Load(), srcClient.natType))
+				newT.ChangeStatus(^uint32(1))
+			}
+		case <-ctx.Done():
+
 		}
 	}
 }
