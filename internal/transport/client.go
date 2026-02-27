@@ -216,7 +216,6 @@ func (t *ClientTransport) heartbeat(ctx context.Context) {
 		select {
 		case <-timer.C:
 			t.ControlSendChan <- hearbeatPacket
-			//log.Println("发送ping")
 		case <-ctx.Done():
 			return
 		}
@@ -268,6 +267,13 @@ func (t *ClientTransport) controlSend(ctx context.Context) {
 	for {
 		select {
 		case gp := <-t.ControlSendChan:
+			if gp.PType == protocol.TypePing {
+				err := t.controlConn.WriteMessage(websocket.PingMessage, nil)
+				if err != nil {
+					log.Println(err)
+					return
+				}
+			}
 			data := gp.EncodePacket(t.bufPool, true)
 			err := t.controlConn.WriteMessage(websocket.BinaryMessage, data)
 			t.bufPool.Put(data[:0])
