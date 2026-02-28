@@ -306,6 +306,10 @@ func (h *Hub) serverWS(ctx context.Context, w http.ResponseWriter, r *http.Reque
 	// 创建新用户实例
 	h.ipMtx.Lock()
 	ip := h.getIp()
+	if ip == nil {
+		log.Println("Ip 分配失败")
+		return
+	}
 	h.ipMtx.Unlock()
 	client := newClient(h, conn, nil, ip)
 	newCtx, cancel := context.WithCancel(ctx)
@@ -613,20 +617,16 @@ func (h *Hub) handleP2PTask(ctx context.Context) {
 }
 
 func (h *Hub) getIp() net.IP {
-	idx := uint8(rand.Uint()%250 + 2)
-	skip := uint8(1)
-	_, ok := h.ipBitMap[idx]
-	if !ok {
-		h.ipBitMap[idx] = struct{}{}
-		return net.IPv4(10, 0, 6, idx)
-	}
-	for {
-		idx = (idx+skip)%250 + 2
-		_, ok = h.ipBitMap[idx+skip]
-		if !ok {
+	startIdx := uint8(rand.Uint32()%250 + 2)
+
+	// 最多遍历 250 次，保证一定能退出
+	for i := 0; i < 250; i++ {
+		idx := ((startIdx - 2 + uint8(i)) % 250) + 2
+		if _, ok := h.ipBitMap[idx]; !ok {
 			h.ipBitMap[idx] = struct{}{}
 			return net.IPv4(10, 0, 6, idx)
 		}
-		skip++
 	}
+	// 找不到空闲 IP 时返回 nil
+	return nil
 }
