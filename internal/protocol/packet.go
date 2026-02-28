@@ -19,6 +19,8 @@ const (
 	TypePong
 	TypeData
 	TypeP2PCommand
+	TypeP2PEstablished
+	TypeP2PClosed
 )
 
 const MagicNumber = 0xDAAA

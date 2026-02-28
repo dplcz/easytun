@@ -76,7 +76,7 @@ func NewTransport() *ClientTransport {
 		}},
 	}
 
-	natType, err := util.GetNatType()
+	natType, err := stun.GetNatType()
 	if err != nil {
 		panic(err)
 	}
@@ -395,13 +395,22 @@ func (t *ClientTransport) packetRecv(ctx context.Context) {
 				}
 			case protocol.TypePong:
 				snapshot := t.p2pRouter.Load().(map[[4]byte]*stun.P2PStatus)
-				status, ok := snapshot[[4]byte(gp.SourceVirtualIp().To4())]
+				srcVIp := gp.SourceVirtualIp().To4()
+				status, ok := snapshot[[4]byte(srcVIp)]
 				if !ok {
 					continue
 				}
 				status.DstAddr = addr
 				status.UpdateLastSeen(true)
 				t.bufPool.Put(gp.RawData[:0])
+				controlGp := protocol.NewGamePacket([4]byte(t.localIp.To4()), [4]byte(srcVIp), protocol.TypeP2PEstablished, nil)
+				select {
+				case t.ControlSendChan <- controlGp:
+				case <-ctx.Done():
+					return
+				default:
+					continue
+				}
 			}
 
 		}
@@ -493,6 +502,12 @@ func (t *ClientTransport) removeP2P(vIp [4]byte) {
 		}
 	}
 	t.p2pRouter.Store(newMap)
+	controlGp := protocol.NewGamePacket(util.IpToKey(t.localIp), vIp, protocol.TypeP2PClosed, nil)
+	select {
+	case t.ControlSendChan <- controlGp:
+	default:
+		return
+	}
 }
 
 func (t *ClientTransport) testBroadCast(ctx context.Context, second time.Duration) {
