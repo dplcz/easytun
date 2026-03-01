@@ -26,6 +26,14 @@ github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/dplcz/go-test-nat v0.1.0 h1:OpSYyW3cSJGi0VOFn3+k0I6Gx/vYDsipI9pMyRQRlnM=
 github.com/dplcz/go-test-nat v0.1.0/go.mod h1:xaToX5UMK65v/KzBVE9a7hwqfbTgyR5qO2FBIYs75qk=
+github.com/dplcz/go-test-nat v0.1.1 h1:y+rXQn6fVb1iHhsIi3Q+hHgo99XeEsnmQL/u2GxC/sI=
+github.com/dplcz/go-test-nat v0.1.1/go.mod h1:xaToX5UMK65v/KzBVE9a7hwqfbTgyR5qO2FBIYs75qk=
+github.com/dplcz/go-test-nat v0.1.2 h1:v62ES3mmmiqtjvo4tJaz9M5mXsY2h5hHlJwlVnoXdmQ=
+github.com/dplcz/go-test-nat v0.1.2/go.mod h1:xaToX5UMK65v/KzBVE9a7hwqfbTgyR5qO2FBIYs75qk=
+github.com/dplcz/go-test-nat v0.1.3 h1:Y72zMEZs0a0xPgE14nNxcdPcbSoUrR8xyNmZ++YnqxA=
+github.com/dplcz/go-test-nat v0.1.3/go.mod h1:xaToX5UMK65v/KzBVE9a7hwqfbTgyR5qO2FBIYs75qk=
+github.com/dplcz/go-test-nat v0.1.4 h1:45X7ZCebZFEorvtzA1Vc++084YNwHONMmY9vifukIbw=
+github.com/dplcz/go-test-nat v0.1.4/go.mod h1:xaToX5UMK65v/KzBVE9a7hwqfbTgyR5qO2FBIYs75qk=
 github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
 github.com/google/uuid v1.6.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
 github.com/gookit/assert v0.1.1 h1:lh3GcawXe/p+cU7ESTZ5Ui3Sm/x8JWpIis4/1aF0mY0=
