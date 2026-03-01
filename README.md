@@ -27,6 +27,8 @@ English | [中文](README_zh.md)
 - UDP data plane is encrypted and authenticated with ChaCha20-Poly1305.
 - Built-in heartbeat and read-timeout mechanism.
 - Built-in pprof endpoint on server (default `10021`).
+- NAT type detection and experimental P2P hole punching (cone + symmetric NAT prediction).
+- P2P status tracking with keepalive and timeout cleanup.
 
 ## 🧱 Project Structure
 
@@ -37,9 +39,12 @@ English | [中文](README_zh.md)
 │  └─ server            # server entrypoint
 ├─ internal
 │  ├─ config            # config loading
+│  ├─ errorcode         # error definitions
 │  ├─ protocol          # custom protocol encode/decode
+│  ├─ stun              # NAT/P2P utilities
 │  ├─ transport         # client/server transport logic
 │  ├─ tun               # Windows Wintun implementation
+│  ├─ ui                # CLI/UI helpers
 │  └─ util              # initialization and network utilities
 ├─ assets
 │  ├─ config            # config templates
@@ -55,7 +60,8 @@ English | [中文](README_zh.md)
 2. The server assigns a virtual IP (`10.0.6.x`) to the client.
 3. The client reads IP packets from the Wintun interface, encapsulates them into EasyTun packets, then sends them over UDP.
 4. The server routes and forwards packets based on destination IP.
-5. The receiving client decapsulates and writes packets back to its local Wintun interface.
+5. If both peers are online, the server can coordinate P2P hole punching; once established, data can flow peer-to-peer.
+6. The receiving client decapsulates and writes packets back to its local Wintun interface.
 
 Packet header format:
 
@@ -75,7 +81,7 @@ Encryption notes:
 - Go: recommended to use the version declared in `go.mod` (currently `1.25.6`).
 - Client OS: Windows (requires Administrator privilege to create/configure virtual NIC).
 - Server OS: Linux or Windows.
-- Network: server port must allow both TCP and UDP (same port).
+- Network: `server_port` must allow both TCP and UDP (same port), and `check_port` must allow UDP for P2P checks.
 
 ## ⚙️ Configuration
 
@@ -91,6 +97,7 @@ Example:
 {
   "server_ip": "your-public-server-ip",
   "server_port": 10011,
+  "check_port": 10012,
   "device_name": "EasyTun",
   "read_timeout": 10,
   "ping_time": 1,
@@ -104,6 +111,7 @@ Fields:
 
 - `server_ip`: server address.
 - `server_port`: control/data port on server (TCP+UDP, same port).
+- `check_port`: UDP check port for P2P (server listens on this port).
 - `device_name`: Wintun adapter name.
 - `read_timeout`: read timeout (seconds).
 - `ping_time`: heartbeat interval (seconds).
@@ -123,13 +131,14 @@ Example:
 {
   "server_ip": "",
   "server_port": 10011,
+  "check_port": 10012,
   "device_name": "default",
   "read_timeout": 10,
   "ping_time": 1
 }
 ```
 
-Note: server mainly uses `server_port` and `read_timeout`.
+Note: server mainly uses `server_port`, `check_port`, and `read_timeout`.
 
 ## 📌 Important: Config Is Embedded at Build Time
 
@@ -149,6 +158,7 @@ Default server behavior:
 
 - WebSocket endpoint: `/ws`, port = `server_port`
 - UDP listener: port = `server_port`
+- UDP check listener: port = `check_port`
 - pprof: `10021` (HTTP)
 
 ### 2) Start Client (Windows)
@@ -233,6 +243,7 @@ docker build -t easytun-server:latest .
 docker run -d --name easytun-server \
   -p 10011:10011/tcp \
   -p 10011:10011/udp \
+  -p 10012:10012/udp \
   -p 10021:10021/tcp \
   easytun-server:latest
 ```
@@ -250,6 +261,8 @@ docker run -d --name easytun-server \
   - Run client with Administrator privilege.
 - WS connected but no data forwarding:
   - Check server firewall/security group allows both TCP and UDP on the same port.
+- P2P not establishing:
+  - Ensure `check_port` UDP is open and client/server configs match.
 - Client exits right after startup:
   - Verify `server_ip` and `server_port`.
 
@@ -258,12 +271,13 @@ docker run -d --name easytun-server \
 - Client currently supports Windows only (via Wintun).
 - Current server batch I/O path is Linux-only (via `sendmmsg`/`recvmmsg` syscalls).
 - Control message handling and worker-pool optimization are still in progress.
+- P2P is experimental; symmetric NAT success rate is best-effort.
 - No complete automated test suite yet.
 
 ## ✅ TODO List
 
-- [ ] Complete control-plane message handling (client `controlRecv` logic).
-- [ ] Implement P2P traversal for NAT penetration.
+- [x] Complete control-plane message handling (client `controlRecv` logic).
+- [x] Improve P2P traversal (stability, symmetric NAT strategy).
 - [ ] Add HTTPS support for control messages.
 - [x] Add UDP data encryption support.
 - [x] Refactor server UDP RX/TX and forwarding into a configurable worker pool.

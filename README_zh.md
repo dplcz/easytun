@@ -27,6 +27,8 @@
 - UDP 数据面使用 ChaCha20-Poly1305 进行加密与鉴别。
 - 内置心跳与读超时机制。
 - 服务端内置 pprof 入口（默认 `10021` 端口）。
+- 内置 NAT 类型检测与实验性 P2P 打洞（锥形 NAT + 对称 NAT 预测）。
+- P2P 状态跟踪、保活与超时清理。
 
 ## 🧱 项目结构
 
@@ -37,9 +39,12 @@
 │  └─ server            # 服务端入口
 ├─ internal
 │  ├─ config            # 配置加载
+│  ├─ errorcode         # 错误码定义
 │  ├─ protocol          # 自定义协议封包/解包
+│  ├─ stun              # NAT/P2P 相关逻辑
 │  ├─ transport         # 客户端与服务端传输逻辑
 │  ├─ tun               # Windows Wintun 相关实现
+│  ├─ ui                # CLI/UI 辅助
 │  └─ util              # 初始化、网络探测等工具
 ├─ assets
 │  ├─ config            # 配置模板
@@ -55,7 +60,8 @@
 2. 服务端为客户端分配虚拟 IP（`10.0.6.x`）。
 3. 客户端从 Wintun 网卡读取 IP 包，封装为 EasyTun 协议后通过 UDP 发送。
 4. 服务端根据目标 IP 路由并转发给对应客户端。
-5. 接收方客户端解包后写回本地 Wintun 网卡。
+5. 若双方在线，服务端会协同进行 P2P 打洞，建立后可走直连。
+6. 接收方客户端解包后写回本地 Wintun 网卡。
 
 协议头格式：
 
@@ -75,7 +81,7 @@
 - Go：建议使用 `go.mod` 中声明版本（当前为 `1.25.6`）。
 - 客户端系统：Windows（需管理员权限运行，创建/配置网卡）。
 - 服务端系统：Linux 或 Windows。
-- 网络：服务端监听端口需放行 TCP+UDP（同一端口）。
+- 网络：`server_port` 需放行 TCP+UDP（同一端口），`check_port` 需放行 UDP 用于 P2P 检测。
 
 ## ⚙️ 配置说明
 
@@ -91,6 +97,7 @@
 {
   "server_ip": "你的服务器公网IP",
   "server_port": 10011,
+  "check_port": 10012,
   "device_name": "EasyTun",
   "read_timeout": 10,
   "ping_time": 1,
@@ -104,6 +111,7 @@
 
 - `server_ip`：服务端地址。
 - `server_port`：服务端控制面/数据面端口（TCP+UDP 同端口）。
+- `check_port`：P2P 检测 UDP 端口（服务端监听该端口）。
 - `device_name`：Wintun 网卡名。
 - `read_timeout`：读超时（秒）。
 - `ping_time`：心跳间隔（秒）。
@@ -123,13 +131,14 @@
 {
   "server_ip": "",
   "server_port": 10011,
+  "check_port": 10012,
   "device_name": "default",
   "read_timeout": 10,
   "ping_time": 1
 }
 ```
 
-说明：服务端主要使用 `server_port`、`read_timeout` 等参数。
+说明：服务端主要使用 `server_port`、`check_port`、`read_timeout` 等参数。
 
 ## 📌 重要说明：配置是“编译时嵌入”
 
@@ -149,6 +158,7 @@ go build -tags server -o dist/server ./cmd/server
 
 - WebSocket 监听：`/ws`，端口为 `server_port`
 - UDP 监听：端口为 `server_port`
+- UDP check 监听：端口为 `check_port`
 - pprof：`10021`（HTTP）
 
 ### 2) 启动客户端（Windows）
@@ -233,6 +243,7 @@ docker build -t easytun-server:latest .
 docker run -d --name easytun-server \
   -p 10011:10011/tcp \
   -p 10011:10011/udp \
+  -p 10012:10012/udp \
   -p 10021:10021/tcp \
   easytun-server:latest
 ```
@@ -250,6 +261,8 @@ docker run -d --name easytun-server \
     - 请以管理员权限运行客户端。
 - 客户端与服务端能连上 WS 但无数据：
     - 检查服务端端口是否同时放行 TCP 与 UDP。
+- P2P 无法建立：
+    - 确认 `check_port` UDP 已放行，且客户端/服务端配置一致。
 - 客户端启动即退出：
     - 检查配置中的 `server_ip`、`server_port` 是否正确。
 
@@ -258,12 +271,13 @@ docker run -d --name easytun-server \
 - 当前客户端仅支持 Windows（通过Wintun）。
 - 当前服务端使用的批读写功能仅支持 Linux（通过系统调用sendmmsg，recvmmsg）。
 - 控制消息处理、部分工作池优化仍在迭代中。
+- P2P 仍为实验性功能，对称 NAT 成功率为尽力而为。
 - 暂无完善自动化测试。
 
 ## ✅ TODO List
 
-- [ ] 完善控制面消息处理（客户端 `controlRecv` 逻辑）。、
-- [ ] 实现内网穿透的 P2P 。
+- [x] 完善控制面消息处理（客户端 `controlRecv` 逻辑）。
+- [x] 完善 P2P 穿透（稳定性、对称 NAT 策略）。
 - [ ] 添加控制消息的 HTTPS 支持。
 - [x] 添加 UDP 数据加密支持。
 - [x] 将服务端 UDP 收发/转发改造为可配置工作池。
