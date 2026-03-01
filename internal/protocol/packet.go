@@ -18,6 +18,7 @@ const (
 	TypePing
 	TypePong
 	TypeData
+	TypeCheck
 	TypeP2PCommand
 	TypeP2PEstablished
 	TypeP2PClosed
@@ -68,6 +69,18 @@ func NewGamePacket(src, dst [4]byte, pType uint8, payload []byte) *GamePacket {
 		PType:   pType,
 		Length:  uint16(len(payload)) + 16,
 		Payload: payload,
+	}
+}
+
+func (g *GamePacket) Reset(src, dst [4]byte, pType uint8, payload []byte) {
+	g.src = src
+	g.dst = dst
+	g.PType = pType
+	g.Payload = payload
+	if len(payload) > 0 {
+		g.Length = uint16(len(payload)) + 16
+	} else {
+		g.Length = 0
 	}
 }
 
@@ -143,6 +156,11 @@ func (g *GamePacket) EncodePacket(pool *sync.Pool, control bool) []byte {
 		data = make([]byte, dataLength)
 	}
 	data = data[:0]
+	data = g.encode(data, control)
+	return data
+}
+
+func (g *GamePacket) EncodePacketWithBuffer(data []byte, control bool) []byte {
 	data = g.encode(data, control)
 	return data
 }
