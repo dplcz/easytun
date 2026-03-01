@@ -18,6 +18,10 @@ const (
 	TypePing
 	TypePong
 	TypeData
+	TypeCheck
+	TypeP2PCommand
+	TypeP2PEstablished
+	TypeP2PClosed
 )
 
 const MagicNumber = 0xDAAA
@@ -68,6 +72,18 @@ func NewGamePacket(src, dst [4]byte, pType uint8, payload []byte) *GamePacket {
 	}
 }
 
+func (g *GamePacket) Reset(src, dst [4]byte, pType uint8, payload []byte) {
+	g.src = src
+	g.dst = dst
+	g.PType = pType
+	g.Payload = payload
+	if len(payload) > 0 {
+		g.Length = uint16(len(payload)) + 16
+	} else {
+		g.Length = 0
+	}
+}
+
 func (g *GamePacket) CalculateMs() int {
 	//TODO implement me
 	panic("implement me")
@@ -75,7 +91,7 @@ func (g *GamePacket) CalculateMs() int {
 
 // [magic 2][pType 1][dst 4][length 2][nonce 12(src 4 + label 8)][payload]
 
-func (g *GamePacket) encode(b []byte) []byte {
+func (g *GamePacket) encode(b []byte, control bool) []byte {
 	nonceVal := atomic.AddUint64(&globalNonce, 1)
 	b = binary.BigEndian.AppendUint16(b, uint16(MagicNumber))
 	b = append(b, g.PType)
@@ -86,7 +102,11 @@ func (g *GamePacket) encode(b []byte) []byte {
 	nonceBuf := b[HeaderLength-NonceLength : HeaderLength]
 	if g.Length > 0 {
 		header := b[:HeaderLength-NonceLength]
-		b = aead.Seal(b, nonceBuf, g.Payload, header)
+		if !control && aead != nil {
+			b = aead.Seal(b, nonceBuf, g.Payload, header)
+		} else {
+			b = append(b, g.Payload...)
+		}
 	}
 	return b
 }
@@ -128,7 +148,7 @@ func (g *GamePacket) SourceVirtualIp() net.IP {
 	return net.IPv4(g.src[0], g.src[1], g.src[2], g.src[3])
 }
 
-func (g *GamePacket) EncodePacket(pool *sync.Pool) []byte {
+func (g *GamePacket) EncodePacket(pool *sync.Pool, control bool) []byte {
 	dataLength := int(g.Length + HeaderLength)
 	data := pool.Get().([]byte)
 	if cap(data) < dataLength {
@@ -136,7 +156,12 @@ func (g *GamePacket) EncodePacket(pool *sync.Pool) []byte {
 		data = make([]byte, dataLength)
 	}
 	data = data[:0]
-	data = g.encode(data)
+	data = g.encode(data, control)
+	return data
+}
+
+func (g *GamePacket) EncodePacketWithBuffer(data []byte, control bool) []byte {
+	data = g.encode(data, control)
 	return data
 }
 
@@ -154,4 +179,22 @@ func (g *GamePacket) ParsePacket(pool *sync.Pool, content []byte, parsePayload b
 	copy(data, content)
 	g.RawData = data
 	return g.parse(data, parsePayload)
+}
+
+func (g *GamePacket) ParseControl(data []byte) error {
+	if len(data) < HeaderLength {
+		return errorcode.PacketTooShort
+	}
+	magic := binary.BigEndian.Uint16(data[0:2])
+	if magic != MagicNumber {
+		return errorcode.InvalidMagic
+	}
+	g.PType = data[2]
+	g.dst = [4]byte(data[3:7])
+	g.Length = binary.BigEndian.Uint16(data[7:9])
+	nonceBuf := data[9 : 9+NonceLength]
+
+	g.src = [4]byte(nonceBuf)
+	g.Payload = data[9+NonceLength:]
+	return nil
 }

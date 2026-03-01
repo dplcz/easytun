@@ -17,6 +17,7 @@ var PingTime time.Duration
 var SendWorkers int
 var RecvWorkers int
 var ClientKey []byte
+var CheckPort int
 
 type Configuration struct {
 	ServerIp    string        `json:"server_ip"`
@@ -27,6 +28,7 @@ type Configuration struct {
 	SendWorkers int           `json:"send_workers"`
 	RecvWorkers int           `json:"recv_workers"`
 	ClientKey   string        `json:"key"`
+	CheckPort   int           `json:"check_port"`
 }
 
 func InitConfig(localPath string) {
@@ -63,6 +65,7 @@ func InitConfig(localPath string) {
 	}
 
 	ClientKey = []byte(conf.ClientKey)
+	CheckPort = conf.CheckPort
 
 	log.Println("初始化配置成功!")
 }

@@ -1,3 +1,5 @@
+//go:build server
+
 package transport
 
 import (
@@ -6,6 +8,7 @@ import (
 	"easytun/internal/config"
 	"easytun/internal/errorcode"
 	"easytun/internal/protocol"
+	"easytun/internal/stun"
 	"easytun/internal/util"
 	"errors"
 	"fmt"
@@ -37,6 +40,8 @@ type packet struct {
 }
 
 type Client struct {
+	natType uint8
+
 	hub *Hub
 
 	controlConn *websocket.Conn
@@ -59,14 +64,17 @@ type routerSnapshot struct {
 }
 
 type Hub struct {
-	PacketConn *ipv4.PacketConn
-	UdpConn    *net.UDPConn
+	PacketConn   *ipv4.PacketConn
+	UdpConn      *net.UDPConn
+	CheckUdpConn *net.UDPConn
 
 	controlChan  chan *protocol.GamePacket
 	transferChan chan *transferPacket
 	packetChan   chan *packet
+	p2pTaskChan  chan stun.P2PTask
 
 	router atomic.Value
+	tm     *stun.TunnelManager
 	mtx    sync.Mutex
 
 	ipMtx    sync.Mutex
@@ -97,9 +105,11 @@ func NewHub() *Hub {
 	}
 	h := &Hub{
 		controlChan:  make(chan *protocol.GamePacket, 16),
-		transferChan: make(chan *transferPacket, 64),
+		transferChan: make(chan *transferPacket, 128),
 		packetChan:   make(chan *packet, 128),
+		p2pTaskChan:  make(chan stun.P2PTask, 32),
 		mtx:          sync.Mutex{},
+		tm:           stun.NewTunnelManager(),
 		ipMtx:        sync.Mutex{},
 		ipBitMap:     make(map[uint8]struct{}),
 		Subnet:       subnet,
@@ -136,7 +146,7 @@ func (c *Client) writePump(ctx context.Context, cancel context.CancelFunc) {
 				cancel()
 				return
 			}
-			data := gp.EncodePacket(c.hub.bufPool)
+			data := gp.EncodePacket(c.hub.bufPool, true)
 			w.Write(data)
 			c.hub.bufPool.Put(data[:0])
 			if err := w.Close(); err != nil {
@@ -179,22 +189,48 @@ func (c *Client) readPump(ctx context.Context, cancel context.CancelFunc) {
 			}
 			var newGp *protocol.GamePacket
 
-			err = gp.ParseHeader(readBuffer.Bytes())
+			err = gp.ParseControl(readBuffer.Bytes())
 			if err != nil {
 				log.Println(err)
 				continue
 			}
 			switch gp.PType {
 			case protocol.TypeHandshake:
+				if len(gp.Payload) < 1 {
+					c.natType = stun.TypeUnknown
+				} else {
+					c.natType = gp.Payload[0]
+					log.Printf("Virtual Ip: %s ,NAT type: %d", c.virtualIp.String(), c.natType)
+				}
 				c.hub.addClient(c)
-				newGp = protocol.NewGamePacket([4]byte{}, [4]byte(c.virtualIp.To4()), protocol.TypeHandshake, nil)
-			default:
+				newGp = protocol.NewGamePacket([4]byte{}, util.IpToKey(c.virtualIp), protocol.TypeHandshake, nil)
+				select {
+				case c.controlChan <- newGp:
+				case <-ctx.Done():
+					return
+				default:
+					continue
+				}
+			case protocol.TypeP2PEstablished:
+				A, B := util.IpToKey(c.virtualIp), util.IpToKey(gp.Destination())
+				t, ok := c.hub.tm.Exist(A, B)
+				if !ok {
+					c.hub.tm.AddTunnel(A, B, stun.TunnelConnected)
+				} else if t.GetStatus() == stun.TunnelInit {
+					log.Println("修改 p2p 通道状态为 已连接", A, B)
+					t.ChangeStatus(stun.TunnelConnected)
+				}
 				continue
-			}
-			select {
-			case c.controlChan <- newGp:
-			case <-ctx.Done():
-				return
+			case protocol.TypeP2PClosed:
+				A, B := util.IpToKey(c.virtualIp), util.IpToKey(gp.Destination())
+				t, ok := c.hub.tm.Exist(A, B)
+				if ok {
+					log.Println("修改 p2p 通道状态为 连接失败", A, B)
+					t.ChangeStatus(stun.TunnelFailed)
+					t.AddRetryTimes()
+				}
+
+				continue
 			default:
 				continue
 			}
@@ -266,10 +302,10 @@ func (h *Hub) removeClient(client *Client) {
 		clientSlice: newSlice,
 	}
 	h.router.Store(newSnapshot)
+	h.tm.RemoveA(util.IpToKey(client.virtualIp))
 }
 
 func (h *Hub) serverWS(ctx context.Context, w http.ResponseWriter, r *http.Request) {
-	log.Println("接收到 WebSocket 连接")
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Println("升级 WebSocket 失败:", err)
@@ -280,6 +316,10 @@ func (h *Hub) serverWS(ctx context.Context, w http.ResponseWriter, r *http.Reque
 	h.ipMtx.Lock()
 	ip := h.getIp()
 	h.ipMtx.Unlock()
+	if ip == nil {
+		log.Println("Ip 分配失败")
+		return
+	}
 	client := newClient(h, conn, nil, ip)
 	newCtx, cancel := context.WithCancel(ctx)
 	// 启动该用户的读写协程
@@ -293,6 +333,8 @@ func (h *Hub) serverWS(ctx context.Context, w http.ResponseWriter, r *http.Reque
 		delete(h.ipBitMap, client.virtualIp[3])
 		h.ipMtx.Unlock()
 		h.removeClient(client)
+
+		h.tm.RemoveA(util.IpToKey(client.virtualIp))
 		return
 	}
 }
@@ -325,7 +367,7 @@ func (h *Hub) listenUdp(ctx context.Context) {
 
 	h.PacketConn = ipv4.NewPacketConn(conn)
 	h.UdpConn = conn
-	batchSize := 64
+	batchSize := 128
 	msgs := make([]ipv4.Message, batchSize)
 
 	workerCount := runtime.NumCPU() * 2
@@ -338,6 +380,9 @@ func (h *Hub) listenUdp(ctx context.Context) {
 		go h.writeUdpPacket(ctx)
 	}
 	log.Printf("启动 %d 个发送协程\n", workerCount)
+	log.Println("启动 p2p 调度协程")
+	go h.handleP2PTask(ctx)
+	go h.listenCheck(ctx)
 
 	log.Println("开始监听UDP...")
 	for i := range msgs {
@@ -399,6 +444,62 @@ func (h *Hub) listenUdp(ctx context.Context) {
 	}
 }
 
+func (h *Hub) listenCheck(ctx context.Context) {
+	var srcClient, dstClient *Client
+	var snapShot *routerSnapshot
+	var srcOk, dstOk, ok bool
+	var srcVip, dstVip [4]byte
+	gp := &protocol.GamePacket{}
+	checkAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf(":%d", config.CheckPort))
+	if err != nil {
+		log.Fatalf("UDP check 地址解析失败: %v", err)
+	}
+	conn, err := net.ListenUDP("udp", checkAddr)
+	if err != nil {
+		log.Fatalf("UDP check 监听失败: %v", err)
+	}
+	conn.SetReadBuffer(4 * 1024 * 1024)  // 4MB
+	conn.SetWriteBuffer(4 * 1024 * 1024) // 4MB
+	h.CheckUdpConn = conn
+	buffer := make([]byte, 1024*2)
+	for ctx.Err() == nil {
+		h.CheckUdpConn.SetReadDeadline(time.Now().Add(config.ReadTimeout * time.Second))
+		cnt, addr, err := h.CheckUdpConn.ReadFromUDP(buffer)
+		if err != nil {
+			var netErr *net.OpError
+			if errors.As(err, &netErr) && netErr.Timeout() {
+				continue
+			}
+			log.Println(err)
+			continue
+		}
+		err = gp.ParseControl(buffer[:cnt])
+		if err != nil {
+			log.Println(err)
+			continue
+		}
+		switch gp.PType {
+		case protocol.TypeCheck:
+			_, ok = h.tm.Exist(util.IpToKey(gp.SourceVirtualIp()), util.IpToKey(gp.Destination()))
+			if ok {
+				snapShot = h.router.Load().(*routerSnapshot)
+				srcVip = util.IpToKey(gp.SourceVirtualIp())
+				dstVip = util.IpToKey(gp.Destination())
+				srcClient, srcOk = snapShot.clientMap[srcVip]
+				dstClient, dstOk = snapShot.clientMap[dstVip]
+				if srcOk && dstOk {
+					log.Println("收到check", addr)
+					dstClient.controlChan <- protocol.NewGamePacket(srcVip, dstVip, protocol.TypeP2PCommand, util.UDPAddrToBytes(addr, srcClient.natType))
+				}
+			}
+		default:
+			continue
+		}
+
+	}
+}
+
+// 处理中转
 func (h *Hub) transfer(ctx context.Context) {
 	for {
 		select {
@@ -407,7 +508,8 @@ func (h *Hub) transfer(ctx context.Context) {
 			dst := tp.gp.Destination()
 			src := tp.gp.SourceVirtualIp()
 			snapshot := h.router.Load().(*routerSnapshot)
-			srcClient, ok := snapshot.clientMap[util.IpToKey(src)]
+			srcIp := util.IpToKey(src)
+			srcClient, ok := snapshot.clientMap[srcIp]
 			if ok {
 				srcClient.updateAddrCheck(tp.srcAddr)
 			}
@@ -430,12 +532,17 @@ func (h *Hub) transfer(ctx context.Context) {
 					h.packetPool.Put(p)
 				}
 			case h.Subnet.Contains(dst) && !dst.IsLoopback():
-				client, ok := snapshot.clientMap[util.IpToKey(dst)]
+				dstIp := util.IpToKey(dst.To4())
+				client, ok := snapshot.clientMap[dstIp]
 				if ok {
+					dstAddr := client.dataAddr.Load()
+					if h.ifEstablish(srcIp, dstIp, srcClient.natType, client.natType) {
+						h.newP2PTask(ctx, srcIp, dstIp, tp.srcAddr, dstAddr)
+					}
 					p := h.packetPool.Get().(*packet)
 					p.data = tp.gp.RawData
 					p.broadcast = false
-					p.dstAddr = client.dataAddr.Load()
+					p.dstAddr = dstAddr
 					select {
 					case h.packetChan <- p:
 						consume = true
@@ -446,6 +553,8 @@ func (h *Hub) transfer(ctx context.Context) {
 						log.Println("packetChan已满")
 						h.packetPool.Put(p)
 					}
+				} else {
+					log.Println("未找到 ", dstIp)
 				}
 			}
 			if !consume {
@@ -517,21 +626,99 @@ func (h *Hub) writeUdpPacket(ctx context.Context) {
 	}
 }
 
-func (h *Hub) getIp() net.IP {
-	idx := uint8(rand.Uint()%250 + 2)
-	skip := uint8(1)
-	_, ok := h.ipBitMap[idx]
-	if !ok {
-		h.ipBitMap[idx] = struct{}{}
-		return net.IPv4(10, 0, 6, idx)
+// 处理P2P
+func (h *Hub) ifEstablish(src, dst [4]byte, srcNat, dstNat uint8) bool {
+	if srcNat <= stun.TypeUnknown || dstNat <= stun.TypeUnknown {
+		return false
 	}
+	tunnel, ok := h.tm.Exist(src, dst)
+	if !ok {
+		h.tm.AddTunnel(src, dst, stun.TunnelInit)
+		return true
+	}
+	if tunnel.GetStatus() == stun.TunnelFailed && tunnel.GetRetryTimes() < 6 {
+		tunnel.ChangeStatus(stun.TunnelInit)
+		return true
+	}
+	return false
+}
+
+func (h *Hub) newP2PTask(ctx context.Context, srcVip, dstVip [4]byte, srcAddr, dstAddr *net.UDPAddr) {
+	newTask := stun.P2PTask{
+		DstVip: dstVip,
+		Dst:    dstAddr,
+		SrcVip: srcVip,
+		Src:    srcAddr,
+	}
+	select {
+	case h.p2pTaskChan <- newTask:
+		log.Println("创建新的P2P任务 From: ", srcVip, "to", dstVip)
+	case <-ctx.Done():
+		return
+	default:
+		log.Println("创建P2P通道请求已满...")
+	}
+}
+
+func (h *Hub) handleP2PTask(ctx context.Context) {
+	var srcClient, dstClient *Client
+	var snapShot *routerSnapshot
+	var t *stun.P2PTunnel
+	var srcOk, dstOk, ok bool
 	for {
-		idx = (idx+skip)%250 + 2
-		_, ok = h.ipBitMap[idx+skip]
-		if !ok {
+		select {
+		case task := <-h.p2pTaskChan:
+			snapShot = h.router.Load().(*routerSnapshot)
+			t, ok = h.tm.Exist(task.SrcVip, task.DstVip)
+			if !ok {
+				h.tm.AddTunnel(task.SrcVip, task.DstVip, stun.TunnelInit)
+			} else {
+				t.AddRetryTimes()
+			}
+			srcClient, srcOk = snapShot.clientMap[task.SrcVip]
+			dstClient, dstOk = snapShot.clientMap[task.DstVip]
+			if !srcOk || !dstOk {
+				continue
+			}
+			h.handleP2PCommand(srcClient, dstClient, task)
+
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func (h *Hub) handleP2PCommand(srcClient, dstClient *Client, task stun.P2PTask) {
+	// 触发端口刷新 (TypeCheck)
+	if srcClient.natType == stun.TypeSymmetric {
+		srcClient.controlChan <- protocol.NewGamePacket(task.DstVip, task.SrcVip, protocol.TypeCheck, nil)
+		dstClient.controlChan <- protocol.NewGamePacket(task.SrcVip, task.DstVip, protocol.TypeP2PCommand, util.UDPAddrToBytes(srcClient.dataAddr.Load(), srcClient.natType))
+	}
+	if dstClient.natType == stun.TypeSymmetric {
+		dstClient.controlChan <- protocol.NewGamePacket(task.SrcVip, task.DstVip, protocol.TypeCheck, nil)
+		srcClient.controlChan <- protocol.NewGamePacket(task.DstVip, task.SrcVip, protocol.TypeP2PCommand, util.UDPAddrToBytes(dstClient.dataAddr.Load(), dstClient.natType))
+	}
+
+	// 下发 P2P 打洞指令 (TypeP2PCommand)
+	if dstClient.natType == stun.TypeCone {
+		srcClient.controlChan <- protocol.NewGamePacket(task.DstVip, task.SrcVip, protocol.TypeP2PCommand, util.UDPAddrToBytes(dstClient.dataAddr.Load(), dstClient.natType))
+	}
+	if srcClient.natType == stun.TypeCone {
+		dstClient.controlChan <- protocol.NewGamePacket(task.SrcVip, task.DstVip, protocol.TypeP2PCommand, util.UDPAddrToBytes(srcClient.dataAddr.Load(), srcClient.natType))
+	}
+}
+
+func (h *Hub) getIp() net.IP {
+	startIdx := uint8(rand.Uint32()%250 + 2)
+
+	// 最多遍历 250 次，保证一定能退出
+	for i := 0; i < 250; i++ {
+		idx := ((startIdx - 2 + uint8(i)) % 250) + 2
+		if _, ok := h.ipBitMap[idx]; !ok {
 			h.ipBitMap[idx] = struct{}{}
 			return net.IPv4(10, 0, 6, idx)
 		}
-		skip++
 	}
+	// 找不到空闲 IP 时返回 nil
+	return nil
 }
