@@ -21,6 +21,7 @@ func (s *P2PStatus) UpdateLastSeen(established bool) {
 	atomic.StoreInt64(&s.LastSeen, time.Now().Unix())
 	if s.Established.Load() == false && established {
 		log.Println("建立 p2p 连接成功...")
+		log.Println(s.DstAddr.String())
 	}
 	s.Established.Store(established)
 }

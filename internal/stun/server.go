@@ -26,6 +26,7 @@ type P2PTunnel struct {
 	B          [4]byte
 	Status     uint32
 	RetryTimes uint32
+	InitCnt    uint8
 }
 
 func (t *P2PTunnel) AddRetryTimes() {
@@ -35,7 +36,7 @@ func (t *P2PTunnel) GetRetryTimes() uint32 {
 	return atomic.LoadUint32(&t.RetryTimes)
 }
 func (t *P2PTunnel) ChangeStatus(status uint32) {
-	atomic.StoreUint32(&t.Status, status) // 建议直接 Store 覆盖状态，而不是 Add 增量
+	atomic.StoreUint32(&t.Status, status)
 }
 func (t *P2PTunnel) GetStatus() uint32 {
 	return atomic.LoadUint32(&t.Status)

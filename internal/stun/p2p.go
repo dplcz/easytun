@@ -8,9 +8,9 @@ import (
 
 const (
 	TypeBlock = iota + 1
+	TypeUnknown
 	TypeCone
 	TypeSymmetric
-	TypeUnknown
 )
 
 func GetNatType() (uint8, error) {
