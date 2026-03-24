@@ -18,6 +18,8 @@ var SendWorkers int
 var RecvWorkers int
 var ClientKey []byte
 var CheckPort int
+var EnableP2P bool
+var EnableUi bool
 
 type Configuration struct {
 	ServerIp    string        `json:"server_ip"`
@@ -29,6 +31,8 @@ type Configuration struct {
 	RecvWorkers int           `json:"recv_workers"`
 	ClientKey   string        `json:"key"`
 	CheckPort   int           `json:"check_port"`
+	EnableP2P   bool          `json:"enable_p2p"`
+	EnableUi    bool          `json:"enable_ui"`
 }
 
 func InitConfig(localPath string) {
@@ -66,6 +70,8 @@ func InitConfig(localPath string) {
 
 	ClientKey = []byte(conf.ClientKey)
 	CheckPort = conf.CheckPort
+	EnableP2P = conf.EnableP2P
+	EnableUi = conf.EnableUi
 
-	log.Println("初始化配置成功!")
+	//log.Println("初始化配置成功!")
 }

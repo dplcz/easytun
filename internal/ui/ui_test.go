@@ -10,55 +10,61 @@ import (
 )
 
 func TestUi(t *testing.T) {
-	// 1. 设置数据容器
-	throughputData := []pterm.Bar{
-		{Label: "T-9", Value: 10},
-		{Label: "T-8", Value: 12},
-		{Label: "T-7", Value: 15},
-		{Label: "T-6", Value: 11},
-		{Label: "T-5", Value: 18},
-	}
+	sendHistory := make([]int, 5)
+	recvHistory := make([]int, 5)
 
-	// 2. 创建一个实时更新区域
 	area, _ := pterm.DefaultArea.Start()
 	defer area.Stop()
 
-	for i := 0; i < 50; i++ {
-		// 模拟数据生成
-		newVal := rand.Intn(20) + 10
-		latency := rand.Intn(100) + 20
+	ticker := time.NewTicker(time.Second)
+	for range ticker.C {
+		// 模拟获取当前秒的原子计数器增量
+		currSend := rand.Intn(500) + 100
+		currRecv := rand.Intn(500) + 150
 
-		// 更新吞吐量队列（保持最近 10 个数据点）
-		throughputData = append(throughputData, pterm.Bar{
-			Label: fmt.Sprintf("%ds", i),
-			Value: newVal,
-		})
-		if len(throughputData) > 10 {
-			throughputData = throughputData[1:]
+		// 2. 更新数值滑动窗口
+		sendHistory = append(sendHistory[1:], currSend)
+		recvHistory = append(recvHistory[1:], currRecv)
+
+		// 3. 动态生成带有正确 Label 的 pterm.Bars
+		// 我们通过循环，根据索引位置赋予不同的 Label
+		var sendBars []pterm.Bar
+		var recvBars []pterm.Bar
+
+		for i := 0; i < 5; i++ {
+			label := ""
+			if i == 4 {
+				label = "NOW" // 最后一根柱子标记为“现在”
+			} else {
+				label = fmt.Sprintf("-%ds", 4-i) // 前面的标记为 -4s, -3s...
+			}
+
+			sendBars = append(sendBars, pterm.Bar{Label: label, Value: sendHistory[i]})
+			recvBars = append(recvBars, pterm.Bar{Label: label, Value: recvHistory[i], Style: pterm.NewStyle(pterm.FgLightGreen)})
 		}
 
-		// 3. 构建 UI 布局
-		// 顶部：吞吐量折线图
-		chart, _ := pterm.DefaultBarChart.
-			WithBars(throughputData).
-			WithHorizontal(false). // 纵向排列模拟折线趋势
-			WithHeight(10).
+		// 4. 渲染图表
+		sendChart, _ := pterm.DefaultBarChart.
+			WithBars(sendBars).
+			WithHorizontal(false).
+			WithShowValue(true).
 			Srender()
 
-		// 底部：延迟仪表盘样式
-		var latencyColor = pterm.FgGreen
-		if latency > 80 {
-			latencyColor = pterm.FgRed
-		}
+		recvChart, _ := pterm.DefaultBarChart.
+			WithBars(recvBars).
+			WithHorizontal(false).
+			WithShowValue(true).
+			Srender()
 
-		dashboard := pterm.DefaultBox.WithTitle("实时仪表盘").Sprint(
-			pterm.LightBlue("吞吐量: "), pterm.Bold.Sprintf("%d req/s\n", newVal),
-			pterm.LightCyan("网络延迟: "), latencyColor.Sprintf("%d ms", latency),
-		)
+		// 5. 上下布局组装
+		renderContent, _ := pterm.DefaultPanel.WithPanels(pterm.Panels{
+			{{Data: pterm.LightCyan("📊 SEND PPS MONITOR")}},
+			{{Data: sendChart}},
+			{{Data: ""}},
+			{{Data: pterm.LightGreen("📊 RECV PPS MONITOR")}},
+			{{Data: recvChart}},
+		}).WithPadding(1).Srender()
 
-		// 4. 将所有内容合并发送到 Area
-		area.Update(chart + "\n" + dashboard)
-
-		time.Sleep(time.Millisecond * 500)
+		area.Update(renderContent)
 	}
 }

@@ -14,7 +14,7 @@ import (
 
 func main() {
 	isTest := flag.Bool("t", false, "是否启动测试模式 (默认 false)")
-	interval := flag.Int("i", 5, "广播发送间隔秒数 (默认 0，不自动发送)")
+	interval := flag.Int("i", 10, "广播发送间隔毫秒数 (默认 0，不自动发送)")
 	configFile := flag.String("c", "", "自定义配置文件 (默认使用嵌入的配置文件)")
 	flag.Parse()
 	second := time.Duration(*interval)

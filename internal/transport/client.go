@@ -11,6 +11,7 @@ import (
 	"easytun/internal/protocol"
 	"easytun/internal/stun"
 	"easytun/internal/tun"
+	"easytun/internal/ui"
 	"easytun/internal/util"
 	"errors"
 	"fmt"
@@ -27,7 +28,10 @@ import (
 )
 
 type ClientTransport struct {
-	natType uint8
+	natType         uint8
+	sendPacketCount uint64
+	recvPacketCount uint64
+	status          uint8
 
 	device tun.Device
 
@@ -51,6 +55,7 @@ type ClientTransport struct {
 }
 
 func NewTransport() *ClientTransport {
+	// TODO 优化程序状态显示
 	defer func() {
 		if err := recover(); err != nil {
 			fmt.Fprintf(os.Stderr, "\n--- Panic ---\n")
@@ -76,10 +81,15 @@ func NewTransport() *ClientTransport {
 			return make([]byte, 2048)
 		}},
 	}
-
-	natType, err := stun.GetNatType()
-	if err != nil {
-		panic(err)
+	var natType uint8
+	var err error
+	if config.EnableP2P {
+		natType, err = stun.GetNatType()
+		if err != nil {
+			panic(err)
+		}
+	} else {
+		natType = stun.TypeUnknown
 	}
 	t.natType = natType
 	err = t.connectServer()
@@ -100,8 +110,8 @@ func NewTransport() *ClientTransport {
 
 // connectServer 创建连接
 func (t *ClientTransport) connectServer() error {
-	rtt, loss := util.TestPing(config.ServerIp)
-	log.Printf("与服务器延迟为 %v , 丢包率为 %v%%\n", rtt, loss)
+	//rtt, loss := util.TestPing(config.ServerIp)
+	//log.Printf("与服务器延迟为 %v , 丢包率为 %v%%\n", rtt, loss)
 
 	wsUrl := fmt.Sprintf("ws://%s:%d/ws", config.ServerIp, config.ServerPort)
 	tempControlConn, _, err := websocket.DefaultDialer.Dial(wsUrl, nil)
@@ -150,28 +160,24 @@ func (t *ClientTransport) handshake() (*protocol.GamePacket, error) {
 func (t *ClientTransport) ListenAndServe(ctx context.Context, cancel context.CancelFunc, testFlag bool, testSecond *time.Duration) {
 
 	wg := sync.WaitGroup{}
-	wg.Add(7)
+	wg.Add(6)
 
 	go func() {
 		defer wg.Done()
-		defer log.Println(1)
 		t.controlRecv(ctx)
 	}()
 	go func() {
 		defer wg.Done()
-		defer log.Println(2)
 		t.controlSend(ctx)
 		cancel()
 	}()
 	go func() {
 		defer wg.Done()
-		defer log.Println(3)
 		t.heartbeat(ctx)
 	}()
 	go func() {
 		defer wg.Done()
-		defer log.Println(4)
-		log.Printf("已启用 %d 个接收者\n", config.RecvWorkers)
+		//log.Printf("已启用 %d 个接收者\n", config.RecvWorkers)
 		for i := 0; i < config.RecvWorkers; i++ {
 			go t.packetRecv(ctx)
 		}
@@ -182,8 +188,7 @@ func (t *ClientTransport) ListenAndServe(ctx context.Context, cancel context.Can
 	}()
 	go func() {
 		defer wg.Done()
-		defer log.Println(5)
-		log.Printf("已启用 %d 个发送者\n", config.SendWorkers)
+		//log.Printf("已启用 %d 个发送者\n", config.SendWorkers)
 		for i := 0; i < config.SendWorkers; i++ {
 			go t.packetSend(ctx)
 		}
@@ -194,21 +199,29 @@ func (t *ClientTransport) ListenAndServe(ctx context.Context, cancel context.Can
 	}()
 	go func() {
 		defer wg.Done()
-		defer log.Println(6)
 		t.device.Start(ctx, protocol.HeaderLength)
 	}()
 	if testFlag {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			defer log.Println(5)
 			t.testBroadCast(ctx, *testSecond)
 		}()
 	}
-	go func() {
-		defer wg.Done()
-		t.handleP2P(ctx)
-	}()
+	if config.EnableP2P {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			t.handleP2P(ctx)
+		}()
+	}
+	if config.EnableUi {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ui.PerformanceUi(ctx, &t.sendPacketCount, &t.recvPacketCount, &t.status)
+		}()
+	}
 
 	wg.Wait()
 }
@@ -341,6 +354,7 @@ func (t *ClientTransport) packetSend(ctx context.Context) {
 					continue
 				}
 			}
+			atomic.AddUint64(&t.sendPacketCount, uint64(len(payloadBatch)))
 			payloadBatch = payloadBatch[:0]
 		case <-ctx.Done():
 			return
@@ -366,6 +380,7 @@ func (t *ClientTransport) packetRecv(ctx context.Context) {
 			continue
 		}
 		{
+			atomic.AddUint64(&t.recvPacketCount, 1)
 			gp := &protocol.GamePacket{}
 			err = gp.ParsePacket(t.bufPool, buffer[:cnt], true)
 			switch gp.PType {
@@ -538,7 +553,7 @@ func (t *ClientTransport) removeP2P(vIp [4]byte) {
 }
 
 func (t *ClientTransport) testBroadCast(ctx context.Context, second time.Duration) {
-	timer := time.NewTicker(time.Second * second)
+	timer := time.NewTicker(time.Millisecond * second)
 	broadCastHeader := &ipv4.Header{
 		Version:  ipv4.Version,
 		Len:      ipv4.HeaderLen,
@@ -557,7 +572,7 @@ func (t *ClientTransport) testBroadCast(ctx context.Context, second time.Duratio
 	for {
 		select {
 		case <-timer.C:
-			log.Println("执行广播...")
+			//log.Println("执行广播...")
 			t.FromTun <- bch
 		case <-ctx.Done():
 			return
