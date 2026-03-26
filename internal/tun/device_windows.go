@@ -1,3 +1,5 @@
+//go:build client
+
 package tun
 
 import (
@@ -41,23 +43,23 @@ func NewTun(name string, ipByte []byte, toNet, fromNet chan []byte, bufPool *syn
 	if err != nil {
 		panic(fmt.Sprintf("启动会话失败: %v", err))
 	}
-	log.Printf("%s 适配器已启动!\n", name)
+	//log.Printf("%s 适配器已启动!\n", name)
 	cmd := exec.Command("netsh", "interface", "ip", "set", "address", name, "static", ip.String(), net.IP(subnet.Mask).String())
 	if output, err := cmd.CombinedOutput(); err != nil {
 		panic(fmt.Sprintf("配置 IP 失败: %v, Output: %s", err, string(output)))
 	}
-	log.Printf("配置ip成功! 当前虚拟ip为: %s \n", ip.String())
+	//log.Printf("配置ip成功! 当前虚拟ip为: %s \n", ip.String())
 	cmd = exec.Command("netsh", "interface", "ipv4", "set", "subinterface", name, "mtu=1280", "store=persistent")
 	if output, err := cmd.CombinedOutput(); err != nil {
 		panic(fmt.Sprintf("配置 IP 失败: %v, Output: %s", err, string(output)))
 	}
-	log.Printf("配置mtu成功! \n")
+	//log.Printf("配置mtu成功! \n")
 	cmdStr := fmt.Sprintf("Set-NetConnectionProfile -InterfaceAlias '%s' -NetworkCategory Private", name)
 	cmd = exec.Command("powershell", "-Command", cmdStr)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		panic(fmt.Sprintf("配置 IP 失败: %v, Output: %s", err, string(output)))
 	}
-	log.Println("配置专用网络成功!")
+	//log.Println("配置专用网络成功!")
 
 	return &Tun{
 		Ip:         ip,
