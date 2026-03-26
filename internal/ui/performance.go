@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"context"
 	"easytun/internal/config"
 	"fmt"
 	"sync/atomic"
@@ -9,6 +8,27 @@ import (
 
 	"github.com/pterm/pterm"
 )
+
+const (
+	INIT = iota
+	TESTNAT
+	CONNECT
+	INTINETWORK
+	RUNNING
+	CLOSING
+)
+
+var STAT map[uint32]string
+
+func init() {
+	STAT = make(map[uint32]string)
+	STAT[INIT] = "Init"
+	STAT[TESTNAT] = "Test Nat"
+	STAT[CONNECT] = "Connecting Server"
+	STAT[INTINETWORK] = "Init Virtual Work"
+	STAT[RUNNING] = "Running"
+	STAT[CLOSING] = "Closing"
+}
 
 func generateBar(sendHistory, recvHistory []int) (string, string) {
 	var sendBars []pterm.Bar
@@ -42,8 +62,8 @@ func generateBar(sendHistory, recvHistory []int) (string, string) {
 	return sendChart, recvChart
 }
 
-func PerformanceUi(ctx context.Context, sendCounter, recvCounter *uint64, status *uint8) {
-	fmt.Print("\033[H\033[2J")
+func PerformanceUi(sendCounter, recvCounter *uint64, status *uint32) {
+	runningFlag := true
 	ticker := time.NewTicker(time.Second)
 	sendHistory := make([]int, 5)
 	recvHistory := make([]int, 5)
@@ -64,11 +84,12 @@ func PerformanceUi(ctx context.Context, sendCounter, recvCounter *uint64, status
 	)
 	defer area.Stop()
 	defer ticker.Stop()
-	for {
+	for runningFlag {
 		select {
 		case <-ticker.C:
 			curSend := atomic.LoadUint64(sendCounter)
 			curRecv := atomic.LoadUint64(recvCounter)
+			curStatus := atomic.LoadUint32(status)
 			sendHistory = append(sendHistory[1:], int(curSend-lastSend))
 			recvHistory = append(recvHistory[1:], int(curRecv-lastRecv))
 			lastSend = curSend
@@ -81,12 +102,21 @@ func PerformanceUi(ctx context.Context, sendCounter, recvCounter *uint64, status
 				{{Data: pterm.LightGreen("📊 RECV PPS MONITOR")}},
 				{{Data: recvBar}},
 			}).Srender()
+
+			statusBox := pterm.DefaultBox.WithTitle("Status").Sprint(pterm.LightCyan("Status: ") + pterm.LightYellow(STAT[curStatus]))
+			rightTable, _ := pterm.DefaultTable.WithHasHeader(false).WithBoxed(true).WithData(pterm.TableData{{versionInfo}, {statusBox}}).Srender()
+			//rightPanel, _ := pterm.DefaultPanel.WithPanels(pterm.Panels{
+			//	{{Data: versionInfo}},
+			//	{{Data: ""}},
+			//	{{Data: statusBox}},
+			//}).Srender()
 			renderContent, _ := pterm.DefaultPanel.WithPanels(pterm.Panels{
-				{{Data: leftPanel}, {Data: versionInfo}},
+				{{Data: leftPanel}, {Data: rightTable}},
 			}).WithPadding(2).Srender()
 			area.Update(renderContent)
-		case <-ctx.Done():
-			return
+			if curStatus == CLOSING {
+				runningFlag = false
+			}
 		}
 	}
 }

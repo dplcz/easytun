@@ -29,9 +29,9 @@ import (
 
 type ClientTransport struct {
 	natType         uint8
-	sendPacketCount uint64
-	recvPacketCount uint64
-	status          uint8
+	sendPacketCount *uint64
+	recvPacketCount *uint64
+	status          *uint32
 
 	device tun.Device
 
@@ -67,7 +67,9 @@ func NewTransport() *ClientTransport {
 			os.Exit(1)
 		}
 	}()
-
+	sendPacketCount := new(uint64)
+	recvPacketCount := new(uint64)
+	status := new(uint32)
 	outerChan := make(chan []byte, 256)
 	innerChan := make(chan []byte, 64)
 	controlRecvChan := make(chan *protocol.GamePacket, 16)
@@ -77,19 +79,30 @@ func NewTransport() *ClientTransport {
 		FromNet:         innerChan,
 		ControlRecvChan: controlRecvChan,
 		ControlSendChan: controlSendChan,
+		sendPacketCount: sendPacketCount,
+		recvPacketCount: recvPacketCount,
+		status:          status,
 		bufPool: &sync.Pool{New: func() interface{} {
 			return make([]byte, 2048)
 		}},
 	}
+
+	if config.EnableUi {
+		go ui.PerformanceUi(t.sendPacketCount, t.recvPacketCount, t.status)
+	}
+
 	var natType uint8
 	var err error
 	if config.EnableP2P {
+		atomic.AddUint32(t.status, 1)
 		natType, err = stun.GetNatType()
 		if err != nil {
 			panic(err)
 		}
+		atomic.AddUint32(t.status, 1)
 	} else {
 		natType = stun.TypeUnknown
+		atomic.AddUint32(t.status, 2)
 	}
 	t.natType = natType
 	err = t.connectServer()
@@ -102,6 +115,7 @@ func NewTransport() *ClientTransport {
 	}
 	t.localIp = handshake.Destination().To4()
 	t.bufPool.Put(handshake.RawData[:0])
+	atomic.AddUint32(t.status, 1)
 	device := tun.NewTun(config.DeviceName, t.localIp, outerChan, innerChan, t.bufPool)
 	t.device = device
 	t.p2pRouter.Store(make(map[[4]byte]*stun.P2PStatus))
@@ -216,13 +230,15 @@ func (t *ClientTransport) ListenAndServe(ctx context.Context, cancel context.Can
 		}()
 	}
 	if config.EnableUi {
-		wg.Add(1)
 		go func() {
-			defer wg.Done()
-			ui.PerformanceUi(ctx, &t.sendPacketCount, &t.recvPacketCount, &t.status)
+			select {
+			case <-ctx.Done():
+				atomic.AddUint32(t.status, 1)
+			}
 		}()
 	}
 
+	atomic.AddUint32(t.status, 1)
 	wg.Wait()
 }
 
@@ -354,7 +370,7 @@ func (t *ClientTransport) packetSend(ctx context.Context) {
 					continue
 				}
 			}
-			atomic.AddUint64(&t.sendPacketCount, uint64(len(payloadBatch)))
+			atomic.AddUint64(t.sendPacketCount, uint64(len(payloadBatch)))
 			payloadBatch = payloadBatch[:0]
 		case <-ctx.Done():
 			return
@@ -380,7 +396,7 @@ func (t *ClientTransport) packetRecv(ctx context.Context) {
 			continue
 		}
 		{
-			atomic.AddUint64(&t.recvPacketCount, 1)
+			atomic.AddUint64(t.recvPacketCount, 1)
 			gp := &protocol.GamePacket{}
 			err = gp.ParsePacket(t.bufPool, buffer[:cnt], true)
 			switch gp.PType {
