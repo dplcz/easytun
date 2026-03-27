@@ -288,7 +288,7 @@ func (t *ClientTransport) controlRecv(ctx context.Context) {
 				continue
 			}
 			switch gp.PType {
-			case protocol.TypeCheck:
+			case protocol.TypeP2PCheck:
 				log.Println("收到 check")
 				t.checkP2P(gp.SourceVirtualIp())
 			case protocol.TypeP2PCommand:
@@ -524,7 +524,7 @@ func (t *ClientTransport) checkP2P(dst net.IP) {
 		return
 	}
 	defer conn.Close()
-	checkGp := protocol.NewGamePacket(util.IpToKey(t.localIp.To4()), util.IpToKey(dst), protocol.TypeCheck, nil)
+	checkGp := protocol.NewGamePacket(util.IpToKey(t.localIp.To4()), util.IpToKey(dst), protocol.TypeP2PCheck, nil)
 	checkBytes := checkGp.EncodePacket(t.bufPool, true)
 	_, err = conn.WriteTo(checkBytes, t.checkAddr)
 	t.bufPool.Put(checkBytes[:0])

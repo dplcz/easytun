@@ -15,10 +15,11 @@ import (
 
 const (
 	TypeHandshake = iota + 1
+	TypeNoiseHandshake
 	TypePing
 	TypePong
 	TypeData
-	TypeCheck
+	TypeP2PCheck
 	TypeP2PCommand
 	TypeP2PEstablished
 	TypeP2PClosed

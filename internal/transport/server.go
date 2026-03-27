@@ -51,6 +51,8 @@ type Client struct {
 	packetChan chan *packet
 
 	virtualIp net.IP
+
+	noisePublicKey [32]byte
 }
 
 type transferPacket struct {
@@ -196,10 +198,18 @@ func (c *Client) readPump(ctx context.Context, cancel context.CancelFunc) {
 			}
 			switch gp.PType {
 			case protocol.TypeHandshake:
-				if len(gp.Payload) < 1 {
-					c.natType = stun.TypeUnknown
+				payloadLen := len(gp.Payload)
+				if payloadLen < 33 {
+					if payloadLen != 32 {
+						log.Println(errorcode.MissingPublicKey)
+						continue
+					} else {
+						c.natType = stun.TypeUnknown
+						c.noisePublicKey = [32]byte(gp.Payload[:32])
+					}
 				} else {
 					c.natType = gp.Payload[0]
+					c.noisePublicKey = [32]byte(gp.Payload[1:33])
 					log.Printf("Virtual Ip: %s ,NAT type: %d", c.virtualIp.String(), c.natType)
 				}
 				c.hub.addClient(c)
@@ -211,6 +221,8 @@ func (c *Client) readPump(ctx context.Context, cancel context.CancelFunc) {
 				default:
 					continue
 				}
+			case protocol.TypeNoiseHandshake:
+				
 			case protocol.TypeP2PEstablished:
 				A, B := util.IpToKey(c.virtualIp), util.IpToKey(gp.Destination())
 				t, ok := c.hub.tm.Exist(A, B)
@@ -479,7 +491,7 @@ func (h *Hub) listenCheck(ctx context.Context) {
 			continue
 		}
 		switch gp.PType {
-		case protocol.TypeCheck:
+		case protocol.TypeP2PCheck:
 			_, ok = h.tm.Exist(util.IpToKey(gp.SourceVirtualIp()), util.IpToKey(gp.Destination()))
 			if ok {
 				snapShot = h.router.Load().(*routerSnapshot)
@@ -689,13 +701,13 @@ func (h *Hub) handleP2PTask(ctx context.Context) {
 }
 
 func (h *Hub) handleP2PCommand(srcClient, dstClient *Client, task stun.P2PTask) {
-	// 触发端口刷新 (TypeCheck)
+	// 触发端口刷新 (TypeP2PCheck)
 	if srcClient.natType == stun.TypeSymmetric {
-		srcClient.controlChan <- protocol.NewGamePacket(task.DstVip, task.SrcVip, protocol.TypeCheck, nil)
+		srcClient.controlChan <- protocol.NewGamePacket(task.DstVip, task.SrcVip, protocol.TypeP2PCheck, nil)
 		dstClient.controlChan <- protocol.NewGamePacket(task.SrcVip, task.DstVip, protocol.TypeP2PCommand, util.UDPAddrToBytes(srcClient.dataAddr.Load(), srcClient.natType))
 	}
 	if dstClient.natType == stun.TypeSymmetric {
-		dstClient.controlChan <- protocol.NewGamePacket(task.SrcVip, task.DstVip, protocol.TypeCheck, nil)
+		dstClient.controlChan <- protocol.NewGamePacket(task.SrcVip, task.DstVip, protocol.TypeP2PCheck, nil)
 		srcClient.controlChan <- protocol.NewGamePacket(task.DstVip, task.SrcVip, protocol.TypeP2PCommand, util.UDPAddrToBytes(dstClient.dataAddr.Load(), dstClient.natType))
 	}
 
