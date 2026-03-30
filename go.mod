@@ -9,6 +9,7 @@ require (
 
 require (
 	github.com/dplcz/go-test-nat v0.1.4
+	github.com/flynn/noise v1.1.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/prometheus-community/pro-bing v0.8.0
 	github.com/pterm/pterm v0.12.83

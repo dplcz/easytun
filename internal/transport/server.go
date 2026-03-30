@@ -148,7 +148,7 @@ func (c *Client) writePump(ctx context.Context, cancel context.CancelFunc) {
 				cancel()
 				return
 			}
-			data := gp.EncodePacket(c.hub.bufPool, true)
+			data := gp.EncodePacket(c.hub.bufPool)
 			w.Write(data)
 			c.hub.bufPool.Put(data[:0])
 			if err := w.Close(); err != nil {
@@ -222,7 +222,19 @@ func (c *Client) readPump(ctx context.Context, cancel context.CancelFunc) {
 					continue
 				}
 			case protocol.TypeNoiseHandshake:
-				
+				snapshot := c.hub.router.Load().(*routerSnapshot)
+				dstC, ok := snapshot.clientMap[util.IpToKey(gp.Destination())]
+				if !ok {
+					continue
+				}
+				newGp = protocol.NewGamePacket(util.IpToKey(gp.Destination()), util.IpToKey(c.virtualIp), protocol.TypeHandshake, dstC.noisePublicKey[:])
+				select {
+				case c.controlChan <- newGp:
+				case <-ctx.Done():
+					return
+				default:
+					continue
+				}
 			case protocol.TypeP2PEstablished:
 				A, B := util.IpToKey(c.virtualIp), util.IpToKey(gp.Destination())
 				t, ok := c.hub.tm.Exist(A, B)
@@ -351,20 +363,6 @@ func (h *Hub) serverWS(ctx context.Context, w http.ResponseWriter, r *http.Reque
 	}
 }
 
-func (h *Hub) handleControl(ctx context.Context) {
-	for {
-		select {
-		case pg := <-h.controlChan:
-			switch pg.PType {
-			case protocol.TypeHandshake:
-
-			}
-		case <-ctx.Done():
-			return
-		}
-	}
-}
-
 func (h *Hub) listenUdp(ctx context.Context) {
 	udpAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf(":%d", config.ServerPort))
 	if err != nil {
@@ -421,7 +419,7 @@ func (h *Hub) listenUdp(ctx context.Context) {
 			tp := h.tpPool.Get().(*transferPacket)
 			tp.srcAddr = srcAddr
 			gp := tp.gp
-			err = gp.ParsePacket(h.bufPool, payload, true)
+			err = gp.ParsePacket(h.bufPool, payload)
 			if err != nil {
 				log.Println(err)
 				goto CleanUp

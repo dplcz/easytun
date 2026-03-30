@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"easytun/internal/config"
+	"easytun/internal/crypt"
 	"easytun/internal/errorcode"
 	"easytun/internal/protocol"
 	"easytun/internal/stun"
@@ -52,6 +53,8 @@ type ClientTransport struct {
 
 	localIp net.IP
 	bufPool *sync.Pool
+
+	noiseMgr *crypt.NoiseManager
 }
 
 func NewTransport() *ClientTransport {
@@ -119,6 +122,7 @@ func NewTransport() *ClientTransport {
 	device := tun.NewTun(config.DeviceName, t.localIp, outerChan, innerChan, t.bufPool)
 	t.device = device
 	t.p2pRouter.Store(make(map[[4]byte]*stun.P2PStatus))
+	t.noiseMgr = crypt.NewNoiseManager(util.IpToKey(t.localIp))
 	return t
 }
 
@@ -151,8 +155,9 @@ func (t *ClientTransport) connectServer() error {
 
 // handshake 与服务器握手连接
 func (t *ClientTransport) handshake() (*protocol.GamePacket, error) {
-	handshakePacket := protocol.NewGamePacket([4]byte{}, [4]byte{}, protocol.TypeHandshake, []byte{t.natType})
-	data := handshakePacket.EncodePacket(t.bufPool, true)
+	payload := append([]byte{t.natType}, t.noiseMgr.GetStaticPub()...)
+	handshakePacket := protocol.NewGamePacket([4]byte{}, [4]byte{}, protocol.TypeHandshake, payload)
+	data := handshakePacket.EncodePacket(t.bufPool)
 	err := t.controlConn.WriteMessage(websocket.BinaryMessage, data)
 	t.bufPool.Put(data[:0])
 	if err != nil {
@@ -163,7 +168,7 @@ func (t *ClientTransport) handshake() (*protocol.GamePacket, error) {
 	if err != nil {
 		return nil, err
 	}
-	err = handshakePacket.ParsePacket(t.bufPool, content, true)
+	err = handshakePacket.ParsePacket(t.bufPool, content)
 	if err != nil {
 		return nil, err
 	}
@@ -288,6 +293,10 @@ func (t *ClientTransport) controlRecv(ctx context.Context) {
 				continue
 			}
 			switch gp.PType {
+			case protocol.TypeNoiseResponse:
+				targetVip := gp.SourceVirtualIp()
+				remotePub := gp.Payload[:32]
+				t.initiateNoise(util.IpToKey(targetVip), remotePub)
 			case protocol.TypeP2PCheck:
 				log.Println("收到 check")
 				t.checkP2P(gp.SourceVirtualIp())
@@ -312,7 +321,7 @@ func (t *ClientTransport) controlSend(ctx context.Context) {
 					return
 				}
 			}
-			data := gp.EncodePacket(t.bufPool, true)
+			data := gp.EncodePacket(t.bufPool)
 			err := t.controlConn.WriteMessage(websocket.BinaryMessage, data)
 			t.bufPool.Put(data[:0])
 			if err != nil {
@@ -329,8 +338,8 @@ func (t *ClientTransport) controlSend(ctx context.Context) {
 func (t *ClientTransport) packetSend(ctx context.Context) {
 	batchSize := 32
 	payloadBatch := make([][]byte, 0, batchSize)
-	var err error
 	gp := &protocol.GamePacket{}
+	headerData := make([]byte, protocol.HeaderLength)
 	for {
 		select {
 		case pr := <-t.FromTun:
@@ -353,8 +362,23 @@ func (t *ClientTransport) packetSend(ctx context.Context) {
 			snapshot := t.p2pRouter.Load().(map[[4]byte]*stun.P2PStatus)
 			for _, p := range payloadBatch {
 				dstIp := [4]byte(p[16:20])
-				gp.Reset([4]byte(t.localIp.To4()), dstIp, protocol.TypeData, p)
-				data := gp.EncodePacket(t.bufPool, false)
+
+				session, ok := t.noiseMgr.GetSession(dstIp)
+				if !ok {
+					query := protocol.NewGamePacket(util.IpToKey(t.localIp), dstIp, protocol.TypeNoiseHandshake, nil)
+					t.ControlSendChan <- query
+					continue
+				}
+				if !session.IsReady() {
+					continue
+				}
+
+				gp.Reset([4]byte(t.localIp.To4()), dstIp, protocol.TypeData, nil)
+				headerData = gp.EncodeHeader(headerData)
+				encrypted, err := session.Encrypt(p, headerData, t.bufPool)
+				gp.Reset([4]byte(t.localIp.To4()), dstIp, protocol.TypeData, encrypted)
+
+				data := gp.EncodePacket(t.bufPool)
 				status, ok := snapshot[dstIp]
 				if !ok {
 					_, err = t.dataConn.WriteToUDP(data, t.serverAddr)
@@ -363,7 +387,7 @@ func (t *ClientTransport) packetSend(ctx context.Context) {
 				} else {
 					_, err = t.dataConn.WriteToUDP(data, t.serverAddr)
 				}
-				t.bufPool.Put(p[:0])
+				t.bufPool.Put(encrypted[:0])
 				t.bufPool.Put(data[:0])
 				if err != nil {
 					log.Println(err)
@@ -383,7 +407,7 @@ func (t *ClientTransport) packetRecv(ctx context.Context) {
 	buffer := make([]byte, 4*1024*1024)
 	pongGp := protocol.NewGamePacket([4]byte(t.localIp.To4()), [4]byte{}, protocol.TypePong, nil)
 	gpBuf := make([]byte, 0, 1024)
-	pongBytes := pongGp.EncodePacketWithBuffer(gpBuf, true)
+	pongBytes := pongGp.EncodePacketWithBuffer(gpBuf)
 	for ctx.Err() == nil {
 		t.dataConn.SetReadDeadline(time.Now().Add(time.Second * config.ReadTimeout))
 		cnt, addr, err := t.dataConn.ReadFromUDP(buffer)
@@ -398,22 +422,32 @@ func (t *ClientTransport) packetRecv(ctx context.Context) {
 		{
 			atomic.AddUint64(t.recvPacketCount, 1)
 			gp := &protocol.GamePacket{}
-			err = gp.ParsePacket(t.bufPool, buffer[:cnt], true)
+			err = gp.ParsePacket(t.bufPool, buffer[:cnt])
+			if err != nil {
+				log.Println(err)
+				continue
+			}
+			packetEnd := protocol.HeaderLength + gp.Length
+			if cnt < int(packetEnd) {
+				log.Println(errorcode.PayloadMismatch)
+				t.bufPool.Put(gp.RawData[:0])
+				continue
+			}
 			switch gp.PType {
 			case protocol.TypeData:
+				srcVip := util.IpToKey(gp.SourceVirtualIp())
+				plain, response, err := t.noiseMgr.HandleNoisePacket(srcVip, gp.Payload)
 				if err != nil {
-					log.Println(err)
 					continue
 				}
-				//log.Printf("收到 %s 的消息\n", gp.SourceVirtualIp())
-				packetEnd := protocol.HeaderLength + gp.Length
-				if cnt < int(packetEnd) {
-					log.Println(errorcode.PayloadMismatch)
-					t.bufPool.Put(gp.RawData[:0])
-					continue
+				if response != nil {
+					respGp := protocol.NewGamePacket(util.IpToKey(t.localIp), srcVip, protocol.TypeData, response)
+					data := respGp.EncodePacket(t.bufPool)
+					t.dataConn.WriteToUDP(data, addr)
+					t.bufPool.Put(data[:0])
 				}
 				select {
-				case t.FromNet <- gp.RawData:
+				case t.FromNet <- plain:
 				case <-ctx.Done():
 					return
 				default:
@@ -457,11 +491,30 @@ func (t *ClientTransport) packetRecv(ctx context.Context) {
 	}
 }
 
+// initiateNoise 当收到服务端返回的对端公钥时触发
+func (t *ClientTransport) initiateNoise(remoteVip [4]byte, remotePub []byte) {
+	t.routerMtx.Lock()
+	defer t.routerMtx.Unlock()
+	// TODO 暂存第一个数据包
+	handshakeData, err := t.noiseMgr.GetHandshakeInit(remoteVip, remotePub, nil)
+	if err != nil {
+		log.Printf("生成 Noise Init 失败: %v", err)
+		return
+	}
+	gp := protocol.NewGamePacket(util.IpToKey(t.localIp), remoteVip, protocol.TypeData, handshakeData)
+
+	data := gp.EncodePacket(t.bufPool)
+	_, err = t.dataConn.WriteToUDP(data, t.serverAddr)
+	t.bufPool.Put(data[:0])
+
+	log.Printf("已向 %v 发送 Noise 握手请求", remoteVip)
+}
+
 // P2P
 func (t *ClientTransport) handleP2P(ctx context.Context) {
 	timer := time.NewTicker(time.Second * 3)
 	pingBuf := make([]byte, 0, 1024)
-	pingData := protocol.NewGamePacket([4]byte(t.localIp.To4()), [4]byte{}, protocol.TypePing, nil).EncodePacketWithBuffer(pingBuf, true)
+	pingData := protocol.NewGamePacket([4]byte(t.localIp.To4()), [4]byte{}, protocol.TypePing, nil).EncodePacketWithBuffer(pingBuf)
 	defer timer.Stop()
 	for {
 		select {
@@ -525,7 +578,7 @@ func (t *ClientTransport) checkP2P(dst net.IP) {
 	}
 	defer conn.Close()
 	checkGp := protocol.NewGamePacket(util.IpToKey(t.localIp.To4()), util.IpToKey(dst), protocol.TypeP2PCheck, nil)
-	checkBytes := checkGp.EncodePacket(t.bufPool, true)
+	checkBytes := checkGp.EncodePacket(t.bufPool)
 	_, err = conn.WriteTo(checkBytes, t.checkAddr)
 	t.bufPool.Put(checkBytes[:0])
 	if err != nil {

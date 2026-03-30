@@ -125,7 +125,8 @@ func (t *Tun) tunRecv(ctx context.Context) {
 					}
 					dstIp := net.IP(packet[16:20])
 
-					if dstIp.Equal(net.IPv4bcast) || dstIp[3] == 255 || dstIp.IsMulticast() || (t.Subnet.Contains(dstIp) && !dstIp.IsLoopback()) {
+					//if dstIp.Equal(net.IPv4bcast) || dstIp[3] == 255 || dstIp.IsMulticast() || (t.Subnet.Contains(dstIp) && !dstIp.IsLoopback()) {
+					if t.Subnet.Contains(dstIp) && !dstIp.IsLoopback() {
 						buf := t.bufPool.Get().([]byte)
 						if cap(buf) < packetLen {
 							t.bufPool.Put(buf)
