@@ -3,7 +3,9 @@ package crypt
 import (
 	"bytes"
 	"crypto/rand"
+	"encoding/hex"
 	"errors"
+	"log"
 	"sync"
 
 	"github.com/flynn/noise"
@@ -30,18 +32,21 @@ type NoiseManager struct {
 	mtx      sync.RWMutex
 }
 
-func NewNoiseManager(myVip [4]byte) *NoiseManager {
+func NewNoiseManager() *NoiseManager {
 	// 生产环境建议从配置文件读取或持久化此 Key
 	cs := noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashSHA256)
 	keypair, _ := cs.GenerateKeypair(rand.Reader)
-
+	log.Println("public key :", hex.EncodeToString(keypair.Public))
 	return &NoiseManager{
-		myVip:       myVip,
 		staticPriv:  keypair.Private,
 		staticPub:   keypair.Public,
 		cipherSuite: cs,
 		sessions:    make(map[[4]byte]*NoiseSession),
 	}
+}
+
+func (m *NoiseManager) SetVirtualIp(vip [4]byte) {
+	m.myVip = vip
 }
 
 // GetHandshakeInit 供发送方调用，生成第一个 0-RTT 包
@@ -70,7 +75,7 @@ func (m *NoiseManager) GetHandshakeInit(remoteVip [4]byte, remotePub []byte, fir
 }
 
 // HandleNoisePacket 供接收方调用，处理握手和数据解密
-func (m *NoiseManager) HandleNoisePacket(srcVip [4]byte, data []byte) ([]byte, []byte, error) {
+func (m *NoiseManager) HandleNoisePacket(srcVip [4]byte, header, data []byte) ([]byte, []byte, error) {
 	m.mtx.Lock()
 	session, ok := m.sessions[srcVip]
 	m.mtx.Unlock()
@@ -83,7 +88,13 @@ func (m *NoiseManager) HandleNoisePacket(srcVip [4]byte, data []byte) ([]byte, [
 	session.mtx.Lock()
 	defer session.mtx.Unlock()
 
-	// 2. 冲突仲裁 (碰撞检测)
+	if session.isReady {
+		// 这里可以使用 AD (比如 srcVip) 增强安全性
+		plain, err := session.csRecv.Decrypt(data[:0], header, data)
+		return plain, nil, err
+	}
+
+	// 碰撞检测
 	if !session.isReady && session.isInitiator && len(data) >= 64 {
 		// IP 大的退让为 Responder
 		if bytes.Compare(m.myVip[:], srcVip[:]) > 0 {
@@ -92,9 +103,9 @@ func (m *NoiseManager) HandleNoisePacket(srcVip [4]byte, data []byte) ([]byte, [
 		return nil, nil, errors.New("noise: collision, wait for peer response")
 	}
 
-	// 3. 接收握手响应 (Initiator 收到 Response)
+	// 接收握手响应 (Initiator 收到 Response)
 	if !session.isReady && session.isInitiator {
-		plain, csSend, csRecv, err := session.hs.ReadMessage(nil, data)
+		plain, csRecv, csSend, err := session.hs.ReadMessage(nil, data)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -103,13 +114,6 @@ func (m *NoiseManager) HandleNoisePacket(srcVip [4]byte, data []byte) ([]byte, [
 		session.isReady = true
 		session.hs = nil
 		return plain, nil, nil
-	}
-
-	// 4. 正常数据解密
-	if session.isReady {
-		// 这里可以使用 AD (比如 srcVip) 增强安全性
-		plain, err := session.csRecv.Decrypt(data[:0], nil, data)
-		return plain, nil, err
 	}
 
 	return nil, nil, errors.New("noise: invalid state")
@@ -124,14 +128,13 @@ func (m *NoiseManager) handleResponderFirst(srcVip [4]byte, data []byte) ([]byte
 		StaticKeypair: noise.DHKey{Private: m.staticPriv, Public: m.staticPub},
 	})
 
-	plain, csSend, csRecv, err := hs.ReadMessage(nil, data)
+	plain, _, _, err := hs.ReadMessage(nil, data)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	// 必须立即生成 Response 回发
-	responseMsg, _, _, _ := hs.WriteMessage(nil, nil)
-
+	// 生成 Response 回发
+	responseMsg, csSend, csRecv, _ := hs.WriteMessage(nil, nil)
 	session := &NoiseSession{
 		remoteVip:   srcVip,
 		csSend:      csSend,

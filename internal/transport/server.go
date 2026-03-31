@@ -227,7 +227,7 @@ func (c *Client) readPump(ctx context.Context, cancel context.CancelFunc) {
 				if !ok {
 					continue
 				}
-				newGp = protocol.NewGamePacket(util.IpToKey(gp.Destination()), util.IpToKey(c.virtualIp), protocol.TypeHandshake, dstC.noisePublicKey[:])
+				newGp = protocol.NewGamePacket(util.IpToKey(gp.Destination()), util.IpToKey(c.virtualIp), protocol.TypeNoiseResponse, dstC.noisePublicKey[:])
 				select {
 				case c.controlChan <- newGp:
 				case <-ctx.Done():
@@ -428,7 +428,7 @@ func (h *Hub) listenUdp(ctx context.Context) {
 				log.Println(errorcode.PayloadMismatch)
 				goto CleanUp
 			}
-			if gp.PType != protocol.TypeData {
+			if gp.PType != protocol.TypeData && gp.PType != protocol.TypeNoiseHandshake {
 				log.Println(errorcode.PayloadMismatch)
 				goto CleanUp
 			}
@@ -525,6 +525,7 @@ func (h *Hub) transfer(ctx context.Context) {
 			}
 			switch {
 			case dst.Equal(net.IPv4bcast) || dst.To4()[3] == 255 || dst.IsMulticast():
+				continue
 				if len(snapshot.clientSlice) < 2 {
 					break
 				}

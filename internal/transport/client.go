@@ -108,21 +108,24 @@ func NewTransport() *ClientTransport {
 		atomic.AddUint32(t.status, 2)
 	}
 	t.natType = natType
+	t.noiseMgr = crypt.NewNoiseManager()
 	err = t.connectServer()
 	if err != nil {
+		atomic.AddUint32(t.status, 3)
 		panic(err)
 	}
 	handshake, err := t.handshake()
 	if err != nil {
+		atomic.AddUint32(t.status, 3)
 		panic(err)
 	}
 	t.localIp = handshake.Destination().To4()
+	t.noiseMgr.SetVirtualIp(util.IpToKey(t.localIp))
 	t.bufPool.Put(handshake.RawData[:0])
 	atomic.AddUint32(t.status, 1)
 	device := tun.NewTun(config.DeviceName, t.localIp, outerChan, innerChan, t.bufPool)
 	t.device = device
 	t.p2pRouter.Store(make(map[[4]byte]*stun.P2PStatus))
-	t.noiseMgr = crypt.NewNoiseManager(util.IpToKey(t.localIp))
 	return t
 }
 
@@ -339,7 +342,9 @@ func (t *ClientTransport) packetSend(ctx context.Context) {
 	batchSize := 32
 	payloadBatch := make([][]byte, 0, batchSize)
 	gp := &protocol.GamePacket{}
-	headerData := make([]byte, protocol.HeaderLength)
+	headerData := make([]byte, 0, protocol.HeaderLength)
+	var err error
+	var encrypted []byte
 	for {
 		select {
 		case pr := <-t.FromTun:
@@ -361,22 +366,30 @@ func (t *ClientTransport) packetSend(ctx context.Context) {
 			}
 			snapshot := t.p2pRouter.Load().(map[[4]byte]*stun.P2PStatus)
 			for _, p := range payloadBatch {
+				headerData = headerData[:0]
 				dstIp := [4]byte(p[16:20])
-
-				session, ok := t.noiseMgr.GetSession(dstIp)
-				if !ok {
-					query := protocol.NewGamePacket(util.IpToKey(t.localIp), dstIp, protocol.TypeNoiseHandshake, nil)
-					t.ControlSendChan <- query
-					continue
+				if dstIp[3] != 255 {
+					session, ok := t.noiseMgr.GetSession(dstIp)
+					if !ok {
+						query := protocol.NewGamePacket(util.IpToKey(t.localIp), dstIp, protocol.TypeNoiseHandshake, nil)
+						t.ControlSendChan <- query
+						continue
+					}
+					if !session.IsReady() {
+						continue
+					}
+					gp.Reset([4]byte(t.localIp.To4()), dstIp, protocol.TypeData, nil)
+					gp.Length = uint16(len(p) + 16)
+					headerData = gp.EncodeHeader(headerData)
+					encrypted, err = session.Encrypt(p, headerData, t.bufPool)
+					if err != nil {
+						log.Println(err)
+						continue
+					}
+					gp.Reset([4]byte(t.localIp.To4()), dstIp, protocol.TypeData, encrypted)
+				} else {
+					gp.Reset([4]byte(t.localIp.To4()), dstIp, protocol.TypeData, p)
 				}
-				if !session.IsReady() {
-					continue
-				}
-
-				gp.Reset([4]byte(t.localIp.To4()), dstIp, protocol.TypeData, nil)
-				headerData = gp.EncodeHeader(headerData)
-				encrypted, err := session.Encrypt(p, headerData, t.bufPool)
-				gp.Reset([4]byte(t.localIp.To4()), dstIp, protocol.TypeData, encrypted)
 
 				data := gp.EncodePacket(t.bufPool)
 				status, ok := snapshot[dstIp]
@@ -407,8 +420,10 @@ func (t *ClientTransport) packetRecv(ctx context.Context) {
 	buffer := make([]byte, 4*1024*1024)
 	pongGp := protocol.NewGamePacket([4]byte(t.localIp.To4()), [4]byte{}, protocol.TypePong, nil)
 	gpBuf := make([]byte, 0, 1024)
+	headerData := make([]byte, 0, protocol.HeaderLength)
 	pongBytes := pongGp.EncodePacketWithBuffer(gpBuf)
 	for ctx.Err() == nil {
+		headerData = headerData[:0]
 		t.dataConn.SetReadDeadline(time.Now().Add(time.Second * config.ReadTimeout))
 		cnt, addr, err := t.dataConn.ReadFromUDP(buffer)
 		if err != nil {
@@ -436,7 +451,8 @@ func (t *ClientTransport) packetRecv(ctx context.Context) {
 			switch gp.PType {
 			case protocol.TypeData:
 				srcVip := util.IpToKey(gp.SourceVirtualIp())
-				plain, response, err := t.noiseMgr.HandleNoisePacket(srcVip, gp.Payload)
+				headerData = gp.EncodeHeader(headerData)
+				plain, response, err := t.noiseMgr.HandleNoisePacket(srcVip, headerData, gp.Payload)
 				if err != nil {
 					continue
 				}
@@ -446,8 +462,15 @@ func (t *ClientTransport) packetRecv(ctx context.Context) {
 					t.dataConn.WriteToUDP(data, addr)
 					t.bufPool.Put(data[:0])
 				}
+				plainLen := len(plain)
+				if plainLen > 0 {
+					gp.Payload = gp.Payload[:len(plain)]
+				} else {
+					t.bufPool.Put(gp.RawData[:0])
+					continue
+				}
 				select {
-				case t.FromNet <- plain:
+				case t.FromNet <- gp.RawData:
 				case <-ctx.Done():
 					return
 				default:

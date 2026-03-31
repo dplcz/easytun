@@ -22,7 +22,7 @@ const (
 
 const MagicNumber = 0xDAAA
 
-const HeaderLength = 9
+const HeaderLength = 13
 
 type GamePacket struct {
 	src     [4]byte
