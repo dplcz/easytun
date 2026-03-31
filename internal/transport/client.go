@@ -20,11 +20,13 @@ import (
 	"net"
 	"os"
 	"runtime/debug"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/pterm/pterm"
 	"golang.org/x/net/ipv4"
 )
 
@@ -53,6 +55,8 @@ type ClientTransport struct {
 
 	localIp net.IP
 	bufPool *sync.Pool
+
+	board *ui.Board
 
 	noiseMgr *crypt.NoiseManager
 }
@@ -88,12 +92,12 @@ func NewTransport() *ClientTransport {
 		bufPool: &sync.Pool{New: func() interface{} {
 			return make([]byte, 2048)
 		}},
+		board: ui.NewBoard(status, sendPacketCount, recvPacketCount),
 	}
 
 	if config.EnableUi {
-		go ui.PerformanceUi(t.sendPacketCount, t.recvPacketCount, t.status)
+		go t.board.PerformanceUi()
 	}
-
 	var natType uint8
 	var err error
 	if config.EnableP2P {
@@ -121,12 +125,25 @@ func NewTransport() *ClientTransport {
 	}
 	t.localIp = handshake.Destination().To4()
 	t.noiseMgr.SetVirtualIp(util.IpToKey(t.localIp))
+	t.board.InitLocalIp(util.IpToKey(t.localIp))
 	t.bufPool.Put(handshake.RawData[:0])
 	atomic.AddUint32(t.status, 1)
 	device := tun.NewTun(config.DeviceName, t.localIp, outerChan, innerChan, t.bufPool)
 	t.device = device
 	t.p2pRouter.Store(make(map[[4]byte]*stun.P2PStatus))
 	return t
+}
+
+func (t *ClientTransport) initUi() {
+	t.board.AddInfo("Name", config.DeviceName, nil)
+	t.board.AddInfo("Receiver Count", strconv.Itoa(config.RecvWorkers), pterm.LightCyan)
+	t.board.AddInfo("Sender Count", strconv.Itoa(config.SendWorkers), pterm.LightCyan)
+	if config.EnableP2P {
+		t.board.AddInfo("P2P status", "Enable", pterm.LightGreen)
+	} else {
+		t.board.AddInfo("P2P status", "Disable", pterm.LightRed)
+	}
+
 }
 
 // connectServer 创建连接
@@ -180,9 +197,10 @@ func (t *ClientTransport) handshake() (*protocol.GamePacket, error) {
 
 // ListenAndServe 监听服务
 func (t *ClientTransport) ListenAndServe(ctx context.Context, cancel context.CancelFunc, testFlag bool, testSecond *time.Duration) {
+	t.initUi()
 
 	wg := sync.WaitGroup{}
-	wg.Add(6)
+	wg.Add(7)
 
 	go func() {
 		defer wg.Done()
@@ -222,6 +240,11 @@ func (t *ClientTransport) ListenAndServe(ctx context.Context, cancel context.Can
 	go func() {
 		defer wg.Done()
 		t.device.Start(ctx, protocol.HeaderLength)
+	}()
+
+	go func() {
+		defer wg.Done()
+		t.noiseMgr.CheckSession(ctx)
 	}()
 	if testFlag {
 		wg.Add(1)
@@ -455,6 +478,7 @@ func (t *ClientTransport) packetRecv(ctx context.Context) {
 				headerData = gp.EncodeHeader(headerData)
 				plain, response, err := t.noiseMgr.HandleNoisePacket(srcVip, headerData, gp.Payload)
 				if err != nil {
+					log.Println(err)
 					continue
 				}
 				if response != nil {
@@ -519,7 +543,7 @@ func (t *ClientTransport) packetRecv(ctx context.Context) {
 func (t *ClientTransport) initiateNoise(remoteVip [4]byte, remotePub, pendingData []byte) {
 	t.routerMtx.Lock()
 	defer t.routerMtx.Unlock()
-	// TODO 暂存第一个数据包
+
 	handshakeData, err := t.noiseMgr.GetHandshakeInit(remoteVip, remotePub, pendingData)
 	if err != nil {
 		log.Printf("生成 Noise Init 失败: %v", err)
@@ -530,8 +554,6 @@ func (t *ClientTransport) initiateNoise(remoteVip [4]byte, remotePub, pendingDat
 	data := gp.EncodePacket(t.bufPool)
 	_, err = t.dataConn.WriteToUDP(data, t.serverAddr)
 	t.bufPool.Put(data[:0])
-
-	log.Printf("已向 %v 发送 Noise 握手请求", remoteVip)
 }
 
 // P2P

@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"easytun/internal/config"
 	"fmt"
 	"sync/atomic"
 	"time"
@@ -20,6 +19,23 @@ const (
 
 var STAT map[uint32]string
 
+type Info struct {
+	key       string
+	val       string
+	colorFunc func(...any) string
+}
+
+type InfoSnapshot struct {
+	infos []*Info
+}
+type Board struct {
+	status      *uint32
+	sendCounter *uint64
+	recvCounter *uint64
+	localIp     atomic.Value
+	info        atomic.Value
+}
+
 func init() {
 	STAT = make(map[uint32]string)
 	STAT[INIT] = "Init"
@@ -30,7 +46,25 @@ func init() {
 	STAT[CLOSING] = "Closing"
 }
 
-func generateBar(sendHistory, recvHistory []int) (string, string) {
+func NewBoard(status *uint32, sendCounter, recvCounter *uint64) *Board {
+	infoSnapshot := &InfoSnapshot{
+		infos: make([]*Info, 0),
+	}
+	newBoard := &Board{
+		status:      status,
+		sendCounter: sendCounter,
+		recvCounter: recvCounter,
+	}
+	newBoard.info.Store(infoSnapshot)
+	newBoard.localIp.Store([4]byte{0, 0, 0, 0})
+	return newBoard
+}
+
+func (b *Board) InitLocalIp(localIp [4]byte) {
+	b.localIp.Store(localIp)
+}
+
+func (b *Board) generateBar(sendHistory, recvHistory []int) (string, string) {
 	var sendBars []pterm.Bar
 	var recvBars []pterm.Bar
 
@@ -62,7 +96,20 @@ func generateBar(sendHistory, recvHistory []int) (string, string) {
 	return sendChart, recvChart
 }
 
-func PerformanceUi(sendCounter, recvCounter *uint64, status *uint32) {
+func (b *Board) generateInfo() string {
+	baseStr := pterm.LightCyan("Virtual Ip: ") + fmt.Sprintf("%v\n", b.localIp.Load().([4]byte))
+	infoSnapShot := b.info.Load().(*InfoSnapshot)
+	for _, info := range infoSnapShot.infos {
+		if info.colorFunc != nil {
+			baseStr += pterm.LightCyan(fmt.Sprintf("%s: ", info.key)) + info.colorFunc(fmt.Sprintf("%s\n", info.val))
+		} else {
+			baseStr += pterm.LightCyan(fmt.Sprintf("%s: ", info.key)) + fmt.Sprintf("%s\n", info.val)
+		}
+	}
+	return pterm.DefaultBox.WithTitle("System Info").Sprint(baseStr)
+}
+
+func (b *Board) PerformanceUi() {
 	runningFlag := true
 	ticker := time.NewTicker(time.Second)
 	sendHistory := make([]int, 5)
@@ -70,31 +117,20 @@ func PerformanceUi(sendCounter, recvCounter *uint64, status *uint32) {
 	var lastSend uint64
 	var lastRecv uint64
 	area, _ := pterm.DefaultArea.Start()
-	var p2pStatus string
-	if config.EnableP2P {
-		p2pStatus = pterm.LightGreen("Enable")
-	} else {
-		p2pStatus = pterm.LightRed("Disable")
-	}
-	versionInfo := pterm.DefaultBox.WithTitle("System Info").Sprint(
-		pterm.LightCyan("Name: ") + fmt.Sprintf("%s\n", config.DeviceName) +
-			pterm.LightCyan("Receiver Count: ") + pterm.LightCyan(fmt.Sprintf("%d\n", config.RecvWorkers)) +
-			pterm.LightCyan("Sender Count: ") + pterm.LightCyan(fmt.Sprintf("%d\n", config.SendWorkers)) +
-			pterm.LightCyan("P2P Status: ") + fmt.Sprintf("%s", p2pStatus),
-	)
 	defer area.Stop()
 	defer ticker.Stop()
 	for runningFlag {
 		select {
 		case <-ticker.C:
-			curSend := atomic.LoadUint64(sendCounter)
-			curRecv := atomic.LoadUint64(recvCounter)
-			curStatus := atomic.LoadUint32(status)
+			versionInfo := b.generateInfo()
+			curSend := atomic.LoadUint64(b.sendCounter)
+			curRecv := atomic.LoadUint64(b.recvCounter)
+			curStatus := atomic.LoadUint32(b.status)
 			sendHistory = append(sendHistory[1:], int(curSend-lastSend))
 			recvHistory = append(recvHistory[1:], int(curRecv-lastRecv))
 			lastSend = curSend
 			lastRecv = curRecv
-			sendBar, recvBar := generateBar(sendHistory, recvHistory)
+			sendBar, recvBar := b.generateBar(sendHistory, recvHistory)
 			leftPanel, _ := pterm.DefaultPanel.WithPanels(pterm.Panels{
 				{{Data: pterm.LightCyan("📊 SEND PPS MONITOR")}},
 				{{Data: sendBar}},
@@ -119,4 +155,20 @@ func PerformanceUi(sendCounter, recvCounter *uint64, status *uint32) {
 			}
 		}
 	}
+}
+
+func (b *Board) AddInfo(key, val string, colorFunc func(...any) string) {
+	oldSnapshot := b.info.Load().(*InfoSnapshot)
+	newSnapshot := &InfoSnapshot{
+		infos: make([]*Info, 0, len(oldSnapshot.infos)+1),
+	}
+	for _, info := range oldSnapshot.infos {
+		newSnapshot.infos = append(newSnapshot.infos, info)
+	}
+	newSnapshot.infos = append(newSnapshot.infos, &Info{
+		key:       key,
+		val:       val,
+		colorFunc: colorFunc,
+	})
+	b.info.Store(newSnapshot)
 }
