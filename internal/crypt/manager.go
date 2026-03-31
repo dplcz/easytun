@@ -2,11 +2,14 @@ package crypt
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"log"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/flynn/noise"
 )
@@ -20,6 +23,7 @@ type NoiseSession struct {
 	csRecv      *noise.CipherState
 	isInitiator bool
 	isReady     bool
+	lastSeen    int64
 }
 
 type NoiseManager struct {
@@ -66,6 +70,7 @@ func (m *NoiseManager) GetHandshakeInit(remoteVip [4]byte, remotePub []byte, fir
 		remoteVip:   remoteVip,
 		hs:          hs,
 		isInitiator: true,
+		lastSeen:    time.Now().Unix(),
 	}
 	m.sessions[remoteVip] = session
 
@@ -141,6 +146,7 @@ func (m *NoiseManager) handleResponderFirst(srcVip [4]byte, data []byte) ([]byte
 		csRecv:      csRecv,
 		isReady:     true, // Responder 收到包后即可认为 Ready
 		isInitiator: false,
+		lastSeen:    time.Now().Unix(),
 	}
 
 	m.mtx.Lock()
@@ -158,11 +164,48 @@ func (m *NoiseManager) GetSession(key [4]byte) (*NoiseSession, bool) {
 	m.mtx.Lock()
 	defer m.mtx.Unlock()
 	session, ok := m.sessions[key]
+	if ok {
+		session.updateLastSeen()
+	}
 	return session, ok
+}
+func (m *NoiseManager) DeleteSession(key [4]byte) {
+	m.mtx.Lock()
+	defer m.mtx.Unlock()
+	delete(m.sessions, key)
+}
+func (m *NoiseManager) CheckSession(ctx context.Context) {
+	ticker := time.NewTicker(time.Second * 10)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			func() {
+				m.mtx.Lock()
+				defer m.mtx.Unlock()
+				for key, session := range m.sessions {
+					if session.IsTimeout(10) {
+						delete(m.sessions, key)
+					}
+				}
+			}()
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 func (s *NoiseSession) IsReady() bool {
 	return s.isReady
+}
+
+func (s *NoiseSession) updateLastSeen() {
+	atomic.StoreInt64(&s.lastSeen, time.Now().Unix())
+}
+
+func (s *NoiseSession) IsTimeout(timeout int64) bool {
+	last := atomic.LoadInt64(&s.lastSeen)
+	return time.Now().Unix()-last > timeout
 }
 
 func (s *NoiseSession) Encrypt(data, header []byte, pool *sync.Pool) ([]byte, error) {
