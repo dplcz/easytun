@@ -128,7 +128,7 @@ func (m *NoiseManager) handleResponderFirst(srcVip [4]byte, data []byte) ([]byte
 		StaticKeypair: noise.DHKey{Private: m.staticPriv, Public: m.staticPub},
 	})
 
-	plain, _, _, err := hs.ReadMessage(nil, data)
+	plain, _, _, err := hs.ReadMessage(data[:0], data)
 	if err != nil {
 		return nil, nil, err
 	}

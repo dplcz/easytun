@@ -299,7 +299,8 @@ func (t *ClientTransport) controlRecv(ctx context.Context) {
 			case protocol.TypeNoiseResponse:
 				targetVip := gp.SourceVirtualIp()
 				remotePub := gp.Payload[:32]
-				t.initiateNoise(util.IpToKey(targetVip), remotePub)
+				pendingData := gp.Payload[32:]
+				t.initiateNoise(util.IpToKey(targetVip), remotePub, pendingData)
 			case protocol.TypeP2PCheck:
 				log.Println("收到 check")
 				t.checkP2P(gp.SourceVirtualIp())
@@ -371,7 +372,7 @@ func (t *ClientTransport) packetSend(ctx context.Context) {
 				if dstIp[3] != 255 {
 					session, ok := t.noiseMgr.GetSession(dstIp)
 					if !ok {
-						query := protocol.NewGamePacket(util.IpToKey(t.localIp), dstIp, protocol.TypeNoiseHandshake, nil)
+						query := protocol.NewGamePacket(util.IpToKey(t.localIp), dstIp, protocol.TypeNoiseHandshake, p)
 						t.ControlSendChan <- query
 						continue
 					}
@@ -464,7 +465,7 @@ func (t *ClientTransport) packetRecv(ctx context.Context) {
 				}
 				plainLen := len(plain)
 				if plainLen > 0 {
-					gp.Payload = gp.Payload[:len(plain)]
+					gp.RawData = gp.RawData[:len(plain)+protocol.HeaderLength]
 				} else {
 					t.bufPool.Put(gp.RawData[:0])
 					continue
@@ -515,11 +516,11 @@ func (t *ClientTransport) packetRecv(ctx context.Context) {
 }
 
 // initiateNoise 当收到服务端返回的对端公钥时触发
-func (t *ClientTransport) initiateNoise(remoteVip [4]byte, remotePub []byte) {
+func (t *ClientTransport) initiateNoise(remoteVip [4]byte, remotePub, pendingData []byte) {
 	t.routerMtx.Lock()
 	defer t.routerMtx.Unlock()
 	// TODO 暂存第一个数据包
-	handshakeData, err := t.noiseMgr.GetHandshakeInit(remoteVip, remotePub, nil)
+	handshakeData, err := t.noiseMgr.GetHandshakeInit(remoteVip, remotePub, pendingData)
 	if err != nil {
 		log.Printf("生成 Noise Init 失败: %v", err)
 		return
