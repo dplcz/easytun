@@ -11,4 +11,6 @@ var (
 	PayloadMismatch = errors.New("payload length mismatch")
 	// PacketTooShort 包长度过短
 	PacketTooShort = errors.New("packet too short")
+	// MissingPublicKey 缺少公钥
+	MissingPublicKey = errors.New("missing public key")
 )

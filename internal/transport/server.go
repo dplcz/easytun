@@ -50,7 +50,8 @@ type Client struct {
 	dataAddr   atomic.Pointer[net.UDPAddr]
 	packetChan chan *packet
 
-	virtualIp net.IP
+	virtualIp      net.IP
+	noisePublicKey [32]byte
 }
 
 type transferPacket struct {
@@ -146,7 +147,7 @@ func (c *Client) writePump(ctx context.Context, cancel context.CancelFunc) {
 				cancel()
 				return
 			}
-			data := gp.EncodePacket(c.hub.bufPool, true)
+			data := gp.EncodePacket(c.hub.bufPool, true, nil)
 			w.Write(data)
 			c.hub.bufPool.Put(data[:0])
 			if err := w.Close(); err != nil {
@@ -196,14 +197,36 @@ func (c *Client) readPump(ctx context.Context, cancel context.CancelFunc) {
 			}
 			switch gp.PType {
 			case protocol.TypeHandshake:
-				if len(gp.Payload) < 1 {
-					c.natType = stun.TypeUnknown
+				payloadLen := len(gp.Payload)
+				if payloadLen < 33 {
+					if payloadLen != 32 {
+						log.Println(errorcode.MissingPublicKey)
+						continue
+					} else {
+						c.natType = stun.TypeUnknown
+						c.noisePublicKey = [32]byte(gp.Payload[:32])
+					}
 				} else {
 					c.natType = gp.Payload[0]
+					c.noisePublicKey = [32]byte(gp.Payload[1:33])
 					log.Printf("Virtual Ip: %s ,NAT type: %d", c.virtualIp.String(), c.natType)
 				}
 				c.hub.addClient(c)
 				newGp = protocol.NewGamePacket([4]byte{}, util.IpToKey(c.virtualIp), protocol.TypeHandshake, nil)
+				select {
+				case c.controlChan <- newGp:
+				case <-ctx.Done():
+					return
+				default:
+					continue
+				}
+			case protocol.TypeNoiseHandshake:
+				snapshot := c.hub.router.Load().(*routerSnapshot)
+				dstC, ok := snapshot.clientMap[util.IpToKey(gp.Destination())]
+				if !ok {
+					continue
+				}
+				newGp = protocol.NewGamePacket(util.IpToKey(gp.Destination()), util.IpToKey(c.virtualIp), protocol.TypeNoiseResponse, dstC.noisePublicKey[:])
 				select {
 				case c.controlChan <- newGp:
 				case <-ctx.Done():
@@ -409,7 +432,7 @@ func (h *Hub) listenUdp(ctx context.Context) {
 			tp := h.tpPool.Get().(*transferPacket)
 			tp.srcAddr = srcAddr
 			gp := tp.gp
-			err = gp.ParsePacket(h.bufPool, payload, true)
+			err = gp.ParsePacket(h.bufPool, payload, true, nil)
 			if err != nil {
 				log.Println(err)
 				goto CleanUp
@@ -479,7 +502,7 @@ func (h *Hub) listenCheck(ctx context.Context) {
 			continue
 		}
 		switch gp.PType {
-		case protocol.TypeCheck:
+		case protocol.TypeP2PCheck:
 			_, ok = h.tm.Exist(util.IpToKey(gp.SourceVirtualIp()), util.IpToKey(gp.Destination()))
 			if ok {
 				snapShot = h.router.Load().(*routerSnapshot)
@@ -515,6 +538,7 @@ func (h *Hub) transfer(ctx context.Context) {
 			}
 			switch {
 			case dst.Equal(net.IPv4bcast) || dst.To4()[3] == 255 || dst.IsMulticast():
+				continue
 				if len(snapshot.clientSlice) < 2 {
 					break
 				}
@@ -691,11 +715,11 @@ func (h *Hub) handleP2PTask(ctx context.Context) {
 func (h *Hub) handleP2PCommand(srcClient, dstClient *Client, task stun.P2PTask) {
 	// 触发端口刷新 (TypeCheck)
 	if srcClient.natType == stun.TypeSymmetric {
-		srcClient.controlChan <- protocol.NewGamePacket(task.DstVip, task.SrcVip, protocol.TypeCheck, nil)
+		srcClient.controlChan <- protocol.NewGamePacket(task.DstVip, task.SrcVip, protocol.TypeP2PCheck, nil)
 		dstClient.controlChan <- protocol.NewGamePacket(task.SrcVip, task.DstVip, protocol.TypeP2PCommand, util.UDPAddrToBytes(srcClient.dataAddr.Load(), srcClient.natType))
 	}
 	if dstClient.natType == stun.TypeSymmetric {
-		dstClient.controlChan <- protocol.NewGamePacket(task.SrcVip, task.DstVip, protocol.TypeCheck, nil)
+		dstClient.controlChan <- protocol.NewGamePacket(task.SrcVip, task.DstVip, protocol.TypeP2PCheck, nil)
 		srcClient.controlChan <- protocol.NewGamePacket(task.DstVip, task.SrcVip, protocol.TypeP2PCommand, util.UDPAddrToBytes(dstClient.dataAddr.Load(), dstClient.natType))
 	}
 

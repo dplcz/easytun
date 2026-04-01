@@ -7,7 +7,6 @@
   "ping_time": 1,
   "send_workers": 4,
   "recv_workers": 4,
-  "key": "32-byte-shared-key",
   "enable_p2p": false,
   "enable_ui": true
 }
