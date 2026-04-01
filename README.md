@@ -24,11 +24,13 @@ English | [中文](README_zh.md)
 - Dual-layer lock-free concurrency for routing/forwarding (atomic snapshots + channel pipeline).
 - Server UDP RX/TX + forwarding runs on a worker pool.
 - Uses `sync.Pool` and batch I/O to reduce memory allocation and syscall overhead.
-- UDP data plane is encrypted and authenticated with ChaCha20-Poly1305.
+- Per-peer session establishment is driven by the Noise IK handshake.
+- UDP data plane is encrypted and authenticated with ChaCha20-Poly1305 after Noise session setup.
 - Built-in heartbeat and read-timeout mechanism.
 - Built-in pprof endpoint on server (default `10021`).
 - NAT type detection and experimental P2P hole punching (cone + symmetric NAT prediction).
 - P2P status tracking with keepalive and timeout cleanup.
+- Optional terminal monitoring panel for runtime status, worker counts, throughput, and local virtual IP display.
 
 ## 🧱 Project Structure
 
@@ -71,7 +73,8 @@ Packet header format:
 
 Encryption notes:
 
-- Data plane uses ChaCha20-Poly1305 AEAD.
+- Session bootstrap uses Noise IK (`25519 + ChaChaPoly + SHA256`).
+- Data plane uses ChaCha20-Poly1305 AEAD after the Noise handshake completes.
 - Nonce = `src(4)` + `counter(8)`; `src` is recovered from the nonce.
 - `length` is ciphertext length (payload + 16-byte tag).
 - AAD = header without nonce (`[magic][type][dst][length]`).
@@ -103,7 +106,9 @@ Example:
   "ping_time": 1,
   "send_workers": 4,
   "recv_workers": 4,
-  "key": "32-byte-shared-key"
+  "key": "32-byte-shared-key",
+  "enable_p2p": false,
+  "enable_ui": true
 }
 ```
 
@@ -118,6 +123,8 @@ Fields:
 - `send_workers`: number of client send workers.
 - `recv_workers`: number of client receive workers.
 - `key`: shared key for UDP encryption (32 bytes).
+- `enable_p2p`: enable experimental P2P NAT traversal.
+- `enable_ui`: enable the terminal monitoring panel.
 
 ### 2) Server Config
 
@@ -281,6 +288,7 @@ docker run -d --name easytun-server \
 - [ ] Add HTTPS support for control messages.
 - [x] Add UDP data encryption support.
 - [x] Refactor server UDP RX/TX and forwarding into a configurable worker pool.
+- [ ] Optimize server-side broadcast forwarding with broadcast-to-unicast conversion.
 - [ ] Add Linux client support (TUN/TAP).
 - [x] Support config hot reload or external config loading (instead of embed-only mode).
 - [ ] Add observability metrics (connections, throughput, packet loss, forwarding latency).

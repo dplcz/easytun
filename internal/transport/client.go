@@ -275,11 +275,17 @@ func (t *ClientTransport) ListenAndServe(ctx context.Context, cancel context.Can
 func (t *ClientTransport) heartbeat(ctx context.Context) {
 	timer := time.NewTicker(time.Second * config.PingTime)
 	defer timer.Stop()
-	hearbeatPacket := protocol.NewGamePacket([4]byte(t.localIp.To4()), [4]byte{}, protocol.TypePing, nil)
+	wsHeartbeatPacket := protocol.NewGamePacket([4]byte(t.localIp.To4()), [4]byte{}, protocol.TypePing, nil)
+	udpHeartbeatPacket := protocol.NewGamePacket([4]byte(t.localIp.To4()), [4]byte{}, protocol.TypePing, nil)
+	udpHeartbeatBytes := udpHeartbeatPacket.EncodePacket(t.bufPool, true, nil)
+	defer t.bufPool.Put(udpHeartbeatBytes[:0])
 	for {
 		select {
 		case <-timer.C:
-			t.ControlSendChan <- hearbeatPacket
+			t.ControlSendChan <- wsHeartbeatPacket
+			if _, err := t.dataConn.WriteToUDP(udpHeartbeatBytes, t.serverAddr); err != nil {
+				log.Println(err)
+			}
 		case <-ctx.Done():
 			return
 		}

@@ -54,6 +54,28 @@ type Client struct {
 	noisePublicKey [32]byte
 }
 
+func cloneUDPAddr(addr *net.UDPAddr) *net.UDPAddr {
+	if addr == nil {
+		return nil
+	}
+	ip := append(net.IP(nil), addr.IP...)
+	return &net.UDPAddr{
+		IP:   ip,
+		Port: addr.Port,
+		Zone: addr.Zone,
+	}
+}
+
+func sameUDPAddr(a, b *net.UDPAddr) bool {
+	switch {
+	case a == nil && b == nil:
+		return true
+	case a == nil || b == nil:
+		return false
+	}
+	return a.Port == b.Port && a.Zone == b.Zone && a.IP.Equal(b.IP)
+}
+
 type transferPacket struct {
 	gp      *protocol.GamePacket
 	srcAddr *net.UDPAddr
@@ -271,10 +293,11 @@ func (c *Client) readPump(ctx context.Context, cancel context.CancelFunc) {
 
 func (c *Client) updateAddrCheck(addr *net.UDPAddr) {
 	oldAddr := c.dataAddr.Load()
-	if oldAddr == nil || !oldAddr.IP.Equal(addr.IP) {
-		log.Printf("%s 地址 %s 更改为 %s\n", c.virtualIp.String(), oldAddr.String(), addr.String())
-		c.dataAddr.Store(addr)
+	if sameUDPAddr(oldAddr, addr) {
+		return
 	}
+	log.Printf("%s 地址 %v 更改为 %v\n", c.virtualIp.String(), oldAddr, addr)
+	c.dataAddr.Store(cloneUDPAddr(addr))
 }
 
 func (h *Hub) Run(ctx context.Context) {
@@ -449,7 +472,16 @@ func (h *Hub) listenUdp(ctx context.Context) {
 				log.Println(errorcode.PayloadMismatch)
 				goto CleanUp
 			}
-			if gp.PType != protocol.TypeData {
+			switch gp.PType {
+			case protocol.TypePing:
+				snapshot := h.router.Load().(*routerSnapshot)
+				srcVip := util.IpToKey(gp.SourceVirtualIp())
+				if client, ok := snapshot.clientMap[srcVip]; ok {
+					client.updateAddrCheck(srcAddr)
+				}
+				goto CleanUp
+			case protocol.TypeData:
+			default:
 				log.Println(errorcode.PayloadMismatch)
 				goto CleanUp
 			}
@@ -546,6 +578,7 @@ func (h *Hub) transfer(ctx context.Context) {
 			}
 			switch {
 			case dst.Equal(net.IPv4bcast) || dst.To4()[3] == 255 || dst.IsMulticast():
+				// TODO 广播转单播
 				continue
 				if len(snapshot.clientSlice) < 2 {
 					break
