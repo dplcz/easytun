@@ -150,6 +150,9 @@ func (c *Client) writePump(ctx context.Context, cancel context.CancelFunc) {
 			data := gp.EncodePacket(c.hub.bufPool, true, nil)
 			w.Write(data)
 			c.hub.bufPool.Put(data[:0])
+			if gp.PType == protocol.TypeNoiseResponse {
+				c.hub.bufPool.Put(gp.Payload[:0])
+			}
 			if err := w.Close(); err != nil {
 				return
 			}
@@ -226,12 +229,17 @@ func (c *Client) readPump(ctx context.Context, cancel context.CancelFunc) {
 				if !ok {
 					continue
 				}
-				newGp = protocol.NewGamePacket(util.IpToKey(gp.Destination()), util.IpToKey(c.virtualIp), protocol.TypeNoiseResponse, dstC.noisePublicKey[:])
+				pendingBuffer := c.hub.bufPool.Get().([]byte)
+				pendingBuffer = pendingBuffer[:0]
+				pendingBuffer = append(pendingBuffer, dstC.noisePublicKey[:]...)
+				pendingBuffer = append(pendingBuffer, gp.Payload...)
+				newGp = protocol.NewGamePacket(util.IpToKey(gp.Destination()), util.IpToKey(c.virtualIp), protocol.TypeNoiseResponse, pendingBuffer)
 				select {
 				case c.controlChan <- newGp:
 				case <-ctx.Done():
 					return
 				default:
+					c.hub.bufPool.Put(pendingBuffer[:0])
 					continue
 				}
 			case protocol.TypeP2PEstablished:

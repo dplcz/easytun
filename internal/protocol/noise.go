@@ -21,6 +21,8 @@ type NoiseSession struct {
 	isInitiator bool
 	lastSeen    int64
 	mtx         sync.Mutex
+
+	pendingChan chan []byte
 }
 
 func NewNoiseSession(remoteVip [4]byte, isInitiator bool, hs *noise.HandshakeState) *NoiseSession {
@@ -30,10 +32,13 @@ func NewNoiseSession(remoteVip [4]byte, isInitiator bool, hs *noise.HandshakeSta
 		lastSeen:    time.Now().Unix(),
 		Cipher:      NewChaCha(),
 		hs:          hs,
+		pendingChan: make(chan []byte, 24),
 	}
 }
 
 type NoiseManager struct {
+	tunChan chan []byte
+
 	myVip       [4]byte
 	staticPriv  []byte
 	staticPub   []byte
@@ -42,12 +47,13 @@ type NoiseManager struct {
 	mtx         sync.Mutex
 }
 
-func NewNoiseManager() *NoiseManager {
+func NewNoiseManager(tunChan chan []byte) *NoiseManager {
 	cs := noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashSHA256)
 	keypair, _ := cs.GenerateKeypair(rand.Reader)
 	log.Println("public key :", hex.EncodeToString(keypair.Public))
 
 	noiseMgr := &NoiseManager{
+		tunChan:     tunChan,
 		staticPriv:  keypair.Private,
 		staticPub:   keypair.Public,
 		cipherSuite: cs,
@@ -64,6 +70,20 @@ func (s *NoiseSession) updateLastSeen() {
 func (s *NoiseSession) isTimeout(timeout int64) bool {
 	last := atomic.LoadInt64(&s.lastSeen)
 	return time.Now().Unix()-last > timeout
+}
+
+func (s *NoiseSession) SendAllPendingData(recv chan []byte) {
+	for data := range s.pendingChan {
+		recv <- data
+	}
+}
+
+func (s *NoiseSession) AddPendingData(data []byte) {
+	select {
+	case s.pendingChan <- data:
+	default:
+		return
+	}
 }
 
 func (m *NoiseManager) SetVirtualIp(vip [4]byte) {
@@ -110,7 +130,7 @@ func (m *NoiseManager) DeleteSession(key [4]byte) {
 	m.sessions.Store(newSessions)
 }
 
-func (m *NoiseManager) HandshakeInit(remoteVip [4]byte, remotePub []byte) ([]byte, error) {
+func (m *NoiseManager) HandshakeInit(remoteVip [4]byte, remotePub, payload []byte) ([]byte, error) {
 	hs, _ := noise.NewHandshakeState(noise.Config{
 		CipherSuite:   m.cipherSuite,
 		Random:        rand.Reader,
@@ -121,6 +141,7 @@ func (m *NoiseManager) HandshakeInit(remoteVip [4]byte, remotePub []byte) ([]byt
 	})
 
 	session := NewNoiseSession(remoteVip, true, hs)
+	session.AddPendingData(payload)
 	m.SetSession(remoteVip, session)
 	msg, _, _, err := hs.WriteMessage(nil, nil)
 	return msg, err
@@ -159,6 +180,8 @@ func (m *NoiseManager) HandleNoisePacket(srcVip [4]byte, data []byte) (*NoiseSes
 		}
 		session.Cipher.Init(csRecv.UnsafeKey(), csSend.UnsafeKey())
 		session.hs = nil
+		close(session.pendingChan)
+		session.SendAllPendingData(m.tunChan)
 		return nil, nil, nil
 	}
 	return nil, nil, errors.New("noise: invalid state")
@@ -182,8 +205,9 @@ func (m *NoiseManager) handleResponderFirst(srcVip [4]byte, data []byte) (*Noise
 	responseMsg, csSend, csRecv, _ := hs.WriteMessage(nil, nil)
 	session := NewNoiseSession(srcVip, false, nil)
 	session.Cipher.Init(csRecv.UnsafeKey(), csSend.UnsafeKey())
+	close(session.pendingChan)
 	m.SetSession(srcVip, session)
-
+	session.SendAllPendingData(m.tunChan)
 	return session, responseMsg, nil
 }
 

@@ -110,7 +110,7 @@ func NewTransport() *ClientTransport {
 		atomic.AddUint32(t.status, 2)
 	}
 	t.natType = natType
-	t.noiseMgr = protocol.NewNoiseManager()
+	t.noiseMgr = protocol.NewNoiseManager(outerChan)
 	err = t.connectServer()
 	if err != nil {
 		atomic.AddUint32(t.status, 3)
@@ -197,7 +197,7 @@ func (t *ClientTransport) ListenAndServe(ctx context.Context, cancel context.Can
 	t.initUi()
 
 	wg := sync.WaitGroup{}
-	wg.Add(6)
+	wg.Add(7)
 
 	go func() {
 		defer wg.Done()
@@ -238,6 +238,12 @@ func (t *ClientTransport) ListenAndServe(ctx context.Context, cancel context.Can
 		defer wg.Done()
 		t.device.Start(ctx, protocol.HeaderLength)
 	}()
+
+	go func() {
+		defer wg.Done()
+		t.noiseMgr.CheckSession(ctx)
+	}()
+
 	if testFlag {
 		wg.Add(1)
 		go func() {
@@ -314,7 +320,8 @@ func (t *ClientTransport) controlRecv(ctx context.Context) {
 			case protocol.TypeNoiseResponse:
 				targetVip := gp.SourceVirtualIp()
 				remotePub := gp.Payload[:32]
-				t.initiateNoise(util.IpToKey(targetVip), remotePub)
+				pendingData := gp.Payload[32:]
+				t.initiateNoise(util.IpToKey(targetVip), remotePub, pendingData)
 			case protocol.TypeP2PCheck:
 				log.Println("收到 check")
 				t.checkP2P(gp.SourceVirtualIp())
@@ -389,6 +396,7 @@ func (t *ClientTransport) packetSend(ctx context.Context) {
 						continue
 					}
 					if !session.Cipher.IsReady() {
+						session.AddPendingData(p)
 						continue
 					}
 					gp.Reset([4]byte(t.localIp.To4()), dstIp, protocol.TypeData, p)
@@ -513,8 +521,8 @@ func (t *ClientTransport) packetRecv(ctx context.Context) {
 	}
 }
 
-func (t *ClientTransport) initiateNoise(remoteVip [4]byte, remotePub []byte) {
-	handshakeData, err := t.noiseMgr.HandshakeInit(remoteVip, remotePub)
+func (t *ClientTransport) initiateNoise(remoteVip [4]byte, remotePub, firstPayload []byte) {
+	handshakeData, err := t.noiseMgr.HandshakeInit(remoteVip, remotePub, firstPayload)
 	if err != nil {
 		log.Printf("生成 Noise Init 失败: %v", err)
 		return
