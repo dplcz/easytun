@@ -2,10 +2,12 @@ package protocol
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"log"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -18,6 +20,7 @@ type NoiseSession struct {
 	hs          *noise.HandshakeState
 	isInitiator bool
 	lastSeen    int64
+	mtx         sync.Mutex
 }
 
 func NewNoiseSession(remoteVip [4]byte, isInitiator bool, hs *noise.HandshakeState) *NoiseSession {
@@ -36,6 +39,7 @@ type NoiseManager struct {
 	staticPub   []byte
 	cipherSuite noise.CipherSuite
 	sessions    atomic.Value
+	mtx         sync.Mutex
 }
 
 func NewNoiseManager() *NoiseManager {
@@ -53,6 +57,15 @@ func NewNoiseManager() *NoiseManager {
 	return noiseMgr
 }
 
+func (s *NoiseSession) updateLastSeen() {
+	atomic.StoreInt64(&s.lastSeen, time.Now().Unix())
+}
+
+func (s *NoiseSession) isTimeout(timeout int64) bool {
+	last := atomic.LoadInt64(&s.lastSeen)
+	return time.Now().Unix()-last > timeout
+}
+
 func (m *NoiseManager) SetVirtualIp(vip [4]byte) {
 	m.myVip = vip
 }
@@ -67,10 +80,13 @@ func (m *NoiseManager) GetSession(key [4]byte) (*NoiseSession, bool) {
 	if !ok {
 		return nil, false
 	}
+	session.updateLastSeen()
 	return session, true
 }
 
 func (m *NoiseManager) SetSession(key [4]byte, value *NoiseSession) {
+	m.mtx.Lock()
+	defer m.mtx.Unlock()
 	oldSessions := m.sessions.Load().(map[[4]byte]*NoiseSession)
 	newSessions := make(map[[4]byte]*NoiseSession)
 	for k, v := range oldSessions {
@@ -81,6 +97,8 @@ func (m *NoiseManager) SetSession(key [4]byte, value *NoiseSession) {
 }
 
 func (m *NoiseManager) DeleteSession(key [4]byte) {
+	m.mtx.Lock()
+	defer m.mtx.Unlock()
 	oldSessions := m.sessions.Load().(map[[4]byte]*NoiseSession)
 	newSessions := make(map[[4]byte]*NoiseSession)
 	for k, v := range oldSessions {
@@ -117,6 +135,13 @@ func (m *NoiseManager) HandleNoisePacket(srcVip [4]byte, data []byte) (*NoiseSes
 	} else if session.Cipher.IsReady() {
 		return session, nil, nil
 	}
+
+	session.mtx.Lock()
+	defer session.mtx.Unlock()
+	// Double Check
+	if session.Cipher.IsReady() {
+		return session, nil, nil
+	}
 	// 碰撞检测
 	if !session.Cipher.IsReady() && session.isInitiator && len(data) >= 64 {
 		// IP 大的退让为 Responder
@@ -127,7 +152,7 @@ func (m *NoiseManager) HandleNoisePacket(srcVip [4]byte, data []byte) (*NoiseSes
 	}
 
 	// 接收握手响应 (Initiator 收到 Response)
-	if !session.Cipher.IsReady() && session.isInitiator {
+	if session.isInitiator {
 		_, csRecv, csSend, err := session.hs.ReadMessage(nil, data)
 		if err != nil {
 			return nil, nil, err
@@ -160,4 +185,39 @@ func (m *NoiseManager) handleResponderFirst(srcVip [4]byte, data []byte) (*Noise
 	m.SetSession(srcVip, session)
 
 	return session, responseMsg, nil
+}
+
+func (m *NoiseManager) sweepSessions(timeout int64) {
+	m.mtx.Lock()
+	defer m.mtx.Unlock()
+
+	oldSessions := m.sessions.Load().(map[[4]byte]*NoiseSession)
+	newSessions := make(map[[4]byte]*NoiseSession)
+	changed := false
+
+	for k, v := range oldSessions {
+		if v.isTimeout(timeout) {
+			changed = true
+		} else {
+			newSessions[k] = v
+		}
+	}
+
+	if changed {
+		m.sessions.Store(newSessions)
+	}
+}
+
+func (m *NoiseManager) CheckSession(ctx context.Context) {
+	// 建议 ticker 时间不要长于 timeout 时间，否则清理会延迟很久
+	ticker := time.NewTicker(time.Second * 10)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			m.sweepSessions(30)
+		case <-ctx.Done():
+			return
+		}
+	}
 }
