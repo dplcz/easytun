@@ -4,7 +4,7 @@ package stun
 
 import (
 	"bytes"
-	"net"
+	"net/netip"
 	"sync"
 	"sync/atomic"
 )
@@ -15,12 +15,14 @@ const (
 	TunnelFailed
 )
 
+// P2PTask 代表一个打洞调度任务
 type P2PTask struct {
 	DstVip [4]byte
-	Dst    *net.UDPAddr
+	Dst    netip.AddrPort // 目标公网地址
 	SrcVip [4]byte
-	Src    *net.UDPAddr
+	Src    netip.AddrPort // 来源公网地址
 }
+
 type P2PTunnel struct {
 	A          [4]byte
 	B          [4]byte
@@ -53,7 +55,7 @@ func NewTunnelManager() *TunnelManager {
 	}
 }
 
-// makeKey 生成唯一的通道哈希键，保证 A-B 和 B-A 生成的 Key 一致
+// makeKey 生成唯一的通道哈希键，保证 A-B 和 B-A 生成产生的 Key 一致
 func makeKey(A, B [4]byte) [8]byte {
 	var key [8]byte
 	// 始终把较小的 IP 放在前面，消除方向性
