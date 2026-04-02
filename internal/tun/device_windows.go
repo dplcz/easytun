@@ -54,7 +54,7 @@ func NewTun(name string, ipByte []byte, toNet, fromNet chan []byte, bufPool *syn
 		panic(fmt.Sprintf("配置 IP 失败: %v, Output: %s", err, string(output)))
 	}
 	//log.Printf("配置mtu成功! \n")
-	cmdStr := fmt.Sprintf("Set-NetConnectionProfile -InterfaceAlias '%s' -NetworkCategory Private", name)
+	cmdStr := fmt.Sprintf("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Set-NetConnectionProfile -InterfaceAlias '%s' -NetworkCategory Private", name)
 	cmd = exec.Command("powershell", "-Command", cmdStr)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		panic(fmt.Sprintf("配置 IP 失败: %v, Output: %s", err, string(output)))

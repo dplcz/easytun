@@ -119,7 +119,7 @@ func (t *ClientTransport) ListenAndServe(ctx context.Context, testFlag bool, tes
 	if config.EnableUi {
 		persistentGroup.Go(func() error {
 			<-pCtx.Done()
-			atomic.AddUint32(t.status, 1)
+			atomic.StoreUint32(t.status, ui.CLOSING)
 			return nil
 		})
 	}
@@ -130,14 +130,14 @@ func (t *ClientTransport) ListenAndServe(ctx context.Context, testFlag bool, tes
 		for {
 			// A. 基础探测与连接
 			if config.EnableP2P {
-				atomic.StoreUint32(t.status, 1) // 状态：探测 NAT
+				atomic.StoreUint32(t.status, ui.TESTNAT) // 状态：探测 NAT
 				natType, err := stun.GetNatType()
 				if err == nil {
 					t.natType = natType
 				}
 			}
 
-			atomic.StoreUint32(t.status, 2) // 状态：连接服务器
+			atomic.StoreUint32(t.status, ui.CONNECT) // 状态：连接服务器
 			err := t.connectServer()
 			if err != nil {
 				log.Printf("连接服务器失败 (重试 %d): %v", retryCount, err)
@@ -148,7 +148,7 @@ func (t *ClientTransport) ListenAndServe(ctx context.Context, testFlag bool, tes
 			}
 
 			// B. 握手获取虚拟 IP
-			atomic.StoreUint32(t.status, 3) // 状态：握手
+			atomic.StoreUint32(t.status, ui.INTINETWORK) // 状态：握手
 			handshake, err := t.handshake()
 			if err != nil {
 				log.Printf("握手失败 (重试 %d): %v", retryCount, err)
@@ -176,8 +176,8 @@ func (t *ClientTransport) ListenAndServe(ctx context.Context, testFlag bool, tes
 			t.bufPool.Put(handshake.RawData[:0])
 
 			// D. 运行会话协程
-			retryCount = 0                  // 连接成功，重置重试计数
-			atomic.StoreUint32(t.status, 4) // 状态：运行中
+			retryCount = 0                           // 连接成功，重置重试计数
+			atomic.StoreUint32(t.status, ui.RUNNING) // 状态：运行中
 			log.Printf("连接成功，虚拟 IP: %s", t.localIp.String())
 
 			sessionGroup, sCtx := errgroup.WithContext(pCtx)
@@ -210,6 +210,7 @@ func (t *ClientTransport) ListenAndServe(ctx context.Context, testFlag bool, tes
 			// 等待当前会话结束 (网络断开或 Context 取消)
 			if err := sessionGroup.Wait(); err != nil {
 				log.Printf("网络连接断开: %v", err)
+				atomic.StoreUint32(t.status, ui.RECONNECTING)
 			}
 
 			// 清理当前连接
@@ -232,6 +233,7 @@ func (t *ClientTransport) ListenAndServe(ctx context.Context, testFlag bool, tes
 
 // backoffWait 实现指数退避等待
 func (t *ClientTransport) backoffWait(ctx context.Context, retryCount *int) error {
+	atomic.StoreUint32(t.status, ui.RECONNECTING)
 	*retryCount++
 	waitSec := 1 << uint(*retryCount)
 	if waitSec > 30 {

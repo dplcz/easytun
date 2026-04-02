@@ -17,22 +17,20 @@ English | [中文](README_zh.md)
 
 ## ✨ Features
 
-- Automatically assigns a virtual IP (`10.0.6.0/24`) to each connected client.
-- Client binary embeds both DLL and config file for out-of-the-box usage.
-- Supports unicast, broadcast, and multicast forwarding.
-- Separates control and data channels to reduce data path overhead.
-- Dual-layer lock-free concurrency for routing/forwarding (atomic snapshots + channel pipeline).
-- Optimized runtime goroutine management and control-plane message dispatching using a handler pattern.
-- High-performance address management using `net/netip` to reduce memory overhead.
-- Server UDP RX/TX + forwarding runs on a worker pool.
-- Uses `sync.Pool` and batch I/O to reduce memory allocation and syscall overhead.
-- Per-peer session establishment is driven by the Noise IK handshake.
-- UDP data plane is encrypted and authenticated with ChaCha20-Poly1305 after Noise session setup.
-- Built-in heartbeat and read-timeout mechanism.
-- Built-in pprof endpoint on server (default `10021`).
-- NAT type detection and experimental P2P hole punching (cone + symmetric NAT prediction).
-- P2P status tracking with keepalive and timeout cleanup.
-- Optional terminal monitoring panel for runtime status, worker counts, throughput, and local virtual IP display.
+*   **Seamless Networking**:
+    *   **Auto-Assignment**: Automatically assigns virtual IPs upon connection; supports unicast, broadcast, and multicast forwarding.
+    *   **Out-of-the-Box**: Client embeds Wintun DLL and default config; supports both build-time embedding and external config loading.
+    *   **Smart Reconnect**: Built-in exponential backoff reconnection with real-time `Reconnecting` status display in UI.
+*   **High-Performance Architecture**:
+    *   **Lock-Free Design**: Dual-layer lock-free routing and forwarding using atomic snapshots and channel pipelines.
+    *   **Resource Optimized**: Leverages `net/netip` for address management, `sync.Pool` for memory reuse, and batch I/O to minimize latency and overhead.
+    *   **Elastic Scaling**: Configurable worker pools for both server and client to handle various concurrent loads.
+*   **Security & Traversal**:
+    *   **Hardened Security**: Session establishment via Noise IK protocol; data plane fully encrypted and authenticated using ChaCha20-Poly1305.
+    *   **Intelligent Traversal**: Experimental P2P hole punching (cone + symmetric NAT prediction) with seamless transition between relay and direct modes.
+*   **Observability**:
+    *   **Real-time Monitoring**: Optional terminal UI panel showing connection status, virtual IP, throughput, and system load.
+    *   **Deep Diagnostics**: Built-in pprof endpoint on the server for performance profiling and bottleneck identification.
 
 ## 🧱 Project Structure
 
@@ -108,7 +106,6 @@ Example:
   "ping_time": 1,
   "send_workers": 4,
   "recv_workers": 4,
-  "key": "32-byte-shared-key",
   "enable_p2p": false,
   "enable_ui": true
 }

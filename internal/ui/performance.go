@@ -14,6 +14,7 @@ const (
 	CONNECT
 	INTINETWORK
 	RUNNING
+	RECONNECTING
 	CLOSING
 )
 
@@ -43,6 +44,7 @@ func init() {
 	STAT[CONNECT] = "Connecting Server"
 	STAT[INTINETWORK] = "Init Virtual Work"
 	STAT[RUNNING] = "Running"
+	STAT[RECONNECTING] = "Reconnecting"
 	STAT[CLOSING] = "Closing"
 }
 
