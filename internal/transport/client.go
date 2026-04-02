@@ -33,14 +33,14 @@ type ClientTransport struct {
 
 	device tun.Device // TUN 设备接口
 
-	FromTun chan []byte   // 从 TUN 设备接收的数据通道
-	FromNet chan<- []byte // 写入 TUN 设备的数据通道
+	FromTun chan []byte // 从 TUN 设备接收的数据通道
+	FromNet chan []byte // 写入 TUN 设备的数据通道
 
 	// 服务器收发队列
 	ControlRecvChan chan *protocol.GamePacket // 控制消息接收队列
 	ControlSendChan chan *protocol.GamePacket // 控制消息发送队列
 
-	controlConn *websocket.Conn // WebSocket 控制连接封装 (为了隐藏具体实现)
+	controlConn *websocket.Conn // WebSocket 控制连接封装
 	dataConn    *net.UDPConn    // UDP 数据连接
 	serverAddr  *net.UDPAddr    // 服务端 UDP 地址
 	checkAddr   *net.UDPAddr    // P2P Check 服务地址
@@ -56,9 +56,8 @@ type ClientTransport struct {
 	noiseMgr *protocol.NoiseManager // Noise 协议管理器
 }
 
-// NewTransport 创建并初始化客户端传输层实例
+// NewTransport 创建并初始化客户端传输层实例（仅初始化基础资源，不建立连接）
 func NewTransport() *ClientTransport {
-	// TODO 优化程序状态显示
 	defer func() {
 		if err := recover(); err != nil {
 			fmt.Fprintf(os.Stderr, "\n--- Panic ---\n")
@@ -70,6 +69,7 @@ func NewTransport() *ClientTransport {
 			os.Exit(1)
 		}
 	}()
+
 	sendPacketCount := new(uint64)
 	recvPacketCount := new(uint64)
 	status := new(uint32)
@@ -77,6 +77,7 @@ func NewTransport() *ClientTransport {
 	innerChan := make(chan []byte, 64)
 	controlRecvChan := make(chan *protocol.GamePacket, 16)
 	controlSendChan := make(chan *protocol.GamePacket, 16)
+
 	t := &ClientTransport{
 		FromTun:         outerChan,
 		FromNet:         innerChan,
@@ -91,119 +92,160 @@ func NewTransport() *ClientTransport {
 		board: ui.NewBoard(status, sendPacketCount, recvPacketCount),
 	}
 
+	// 延迟到 ListenAndServe 中初始化的资源
+	t.noiseMgr = protocol.NewNoiseManager(outerChan)
+	t.p2pRouter.Store(make(map[[4]byte]*stun.P2PStatus))
+
 	if config.EnableUi {
 		go t.board.PerformanceUi()
 	}
-	var natType uint8
-	var err error
-	if config.EnableP2P {
-		atomic.AddUint32(t.status, 1)
-		natType, err = stun.GetNatType()
-		if err != nil {
-			panic(err)
-		}
-		atomic.AddUint32(t.status, 1)
-	} else {
-		natType = stun.TypeUnknown
-		atomic.AddUint32(t.status, 2)
-	}
-	t.natType = natType
-	t.noiseMgr = protocol.NewNoiseManager(outerChan)
-	err = t.connectServer()
-	if err != nil {
-		atomic.AddUint32(t.status, 3)
-		panic(err)
-	}
-	handshake, err := t.handshake()
-	if err != nil {
-		atomic.AddUint32(t.status, 3)
-		panic(err)
-	}
-	t.localIp = handshake.Destination().To4()
-	t.noiseMgr.SetVirtualIp(util.IpToKey(t.localIp))
-	t.board.InitLocalIp(util.IpToKey(t.localIp))
-	t.bufPool.Put(handshake.RawData[:0])
-	atomic.AddUint32(t.status, 1)
-	device := tun.NewTun(config.DeviceName, t.localIp, outerChan, innerChan, t.bufPool)
-	t.device = device
-	t.p2pRouter.Store(make(map[[4]byte]*stun.P2PStatus))
+
 	return t
 }
 
-// ListenAndServe 启动客户端的所有核心服务协程，使用 errgroup 管理生命周期
-func (t *ClientTransport) ListenAndServe(ctx context.Context, cancel context.CancelFunc, testFlag bool, testSecond *time.Duration) {
+// ListenAndServe 启动客户端服务并包含自动重连机制
+func (t *ClientTransport) ListenAndServe(ctx context.Context, testFlag bool, testSecond *time.Duration) {
 	t.initUi()
 
-	g, gCtx := errgroup.WithContext(ctx)
-
-	// 控制平面：WebSocket 接收
-	g.Go(func() error {
-		return t.controlRecv(gCtx)
-	})
-
-	// 控制平面：WebSocket 发送
-	g.Go(func() error {
-		err := t.controlSend(gCtx)
-		cancel() // 发送协程退出意味着连接断开，取消 context
-		return err
-	})
-
-	// 维护：心跳
-	g.Go(func() error {
-		return t.heartbeat(gCtx)
-	})
-
-	// 数据平面：接收者们
-	for i := 0; i < config.RecvWorkers; i++ {
-		g.Go(func() error {
-			return t.packetRecv(gCtx)
-		})
-	}
-
-	// 数据平面：发送者们
-	for i := 0; i < config.SendWorkers; i++ {
-		g.Go(func() error {
-			return t.packetSend(gCtx)
-		})
-	}
-
-	// TUN 设备
-	g.Go(func() error {
-		t.device.Start(gCtx, protocol.HeaderLength)
-		return nil
-	})
+	// 1. 启动持久层协程 (不受网络断开影响)
+	persistentGroup, pCtx := errgroup.WithContext(ctx)
 
 	// Noise 会话清理
-	g.Go(func() error {
-		return t.noiseMgr.CheckSession(gCtx)
+	persistentGroup.Go(func() error {
+		return t.noiseMgr.CheckSession(pCtx)
 	})
-
-	// 测试广播
-	if testFlag {
-		g.Go(func() error {
-			return t.testBroadCast(gCtx, *testSecond)
-		})
-	}
-
-	// P2P 维护
-	if config.EnableP2P {
-		g.Go(func() error {
-			return t.handleP2P(gCtx)
-		})
-	}
 
 	// UI 状态清理
 	if config.EnableUi {
-		g.Go(func() error {
-			<-gCtx.Done()
+		persistentGroup.Go(func() error {
+			<-pCtx.Done()
 			atomic.AddUint32(t.status, 1)
 			return nil
 		})
 	}
 
-	atomic.AddUint32(t.status, 1)
+	// 2. 主重连循环
+	persistentGroup.Go(func() error {
+		var retryCount int
+		for {
+			// A. 基础探测与连接
+			if config.EnableP2P {
+				atomic.StoreUint32(t.status, 1) // 状态：探测 NAT
+				natType, err := stun.GetNatType()
+				if err == nil {
+					t.natType = natType
+				}
+			}
 
-	if err := g.Wait(); err != nil {
-		log.Printf("服务由于错误而停止: %v", err)
+			atomic.StoreUint32(t.status, 2) // 状态：连接服务器
+			err := t.connectServer()
+			if err != nil {
+				log.Printf("连接服务器失败 (重试 %d): %v", retryCount, err)
+				if waitErr := t.backoffWait(pCtx, &retryCount); waitErr != nil {
+					return waitErr
+				}
+				continue
+			}
+
+			// B. 握手获取虚拟 IP
+			atomic.StoreUint32(t.status, 3) // 状态：握手
+			handshake, err := t.handshake()
+			if err != nil {
+				log.Printf("握手失败 (重试 %d): %v", retryCount, err)
+				t.dataConn.Close()
+				if waitErr := t.backoffWait(pCtx, &retryCount); waitErr != nil {
+					return waitErr
+				}
+				continue
+			}
+
+			// C. 同步虚拟 IP 与 TUN 设备
+			newVip := handshake.Destination().To4()
+			if t.localIp == nil || !t.localIp.Equal(newVip) {
+				t.localIp = newVip
+				t.noiseMgr.SetVirtualIp(util.IpToKey(t.localIp))
+				t.board.InitLocalIp(util.IpToKey(t.localIp))
+
+				if t.device != nil {
+					t.device.Close()
+				}
+				t.device = tun.NewTun(config.DeviceName, t.localIp, t.FromTun, t.FromNet, t.bufPool)
+				// 启动 TUN 协程
+				go t.device.Start(pCtx, protocol.HeaderLength)
+			}
+			t.bufPool.Put(handshake.RawData[:0])
+
+			// D. 运行会话协程
+			retryCount = 0                  // 连接成功，重置重试计数
+			atomic.StoreUint32(t.status, 4) // 状态：运行中
+			log.Printf("连接成功，虚拟 IP: %s", t.localIp.String())
+
+			sessionGroup, sCtx := errgroup.WithContext(pCtx)
+
+			sessionGroup.Go(func() error { return t.controlRecv(sCtx) })
+			sessionGroup.Go(func() error { return t.controlSend(sCtx) })
+			sessionGroup.Go(func() error { return t.heartbeat(sCtx) })
+
+			for i := 0; i < config.RecvWorkers; i++ {
+				sessionGroup.Go(func() error { return t.packetRecv(sCtx) })
+			}
+			for i := 0; i < config.SendWorkers; i++ {
+				sessionGroup.Go(func() error { return t.packetSend(sCtx) })
+			}
+			if config.EnableP2P {
+				sessionGroup.Go(func() error { return t.handleP2P(sCtx) })
+			}
+			if testFlag {
+				sessionGroup.Go(func() error { return t.testBroadCast(sCtx, *testSecond) })
+			}
+
+			// 监听 Context 取消信号，主动关闭连接以打断阻塞读取
+			sessionGroup.Go(func() error {
+				<-sCtx.Done()
+				t.dataConn.Close()
+				t.controlConn.Close()
+				return nil
+			})
+
+			// 等待当前会话结束 (网络断开或 Context 取消)
+			if err := sessionGroup.Wait(); err != nil {
+				log.Printf("网络连接断开: %v", err)
+			}
+
+			// 清理当前连接
+			t.dataConn.Close()
+			t.controlConn.Close()
+
+			select {
+			case <-pCtx.Done():
+				return nil
+			default:
+				// 继续循环重连
+			}
+		}
+	})
+
+	if err := persistentGroup.Wait(); err != nil {
+		log.Printf("持久服务停止: %v", err)
+	}
+}
+
+// backoffWait 实现指数退避等待
+func (t *ClientTransport) backoffWait(ctx context.Context, retryCount *int) error {
+	*retryCount++
+	waitSec := 1 << uint(*retryCount)
+	if waitSec > 30 {
+		waitSec = 30
+	}
+
+	log.Printf("%d 秒后尝试重连...", waitSec)
+	timer := time.NewTimer(time.Duration(waitSec) * time.Second)
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
