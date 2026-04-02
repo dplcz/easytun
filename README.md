@@ -22,6 +22,8 @@ English | [中文](README_zh.md)
 - Supports unicast, broadcast, and multicast forwarding.
 - Separates control and data channels to reduce data path overhead.
 - Dual-layer lock-free concurrency for routing/forwarding (atomic snapshots + channel pipeline).
+- Optimized runtime goroutine management and control-plane message dispatching using a handler pattern.
+- High-performance address management using `net/netip` to reduce memory overhead.
 - Server UDP RX/TX + forwarding runs on a worker pool.
 - Uses `sync.Pool` and batch I/O to reduce memory allocation and syscall overhead.
 - Per-peer session establishment is driven by the Noise IK handshake.
@@ -277,7 +279,6 @@ docker run -d --name easytun-server \
 
 - Client currently supports Windows only (via Wintun).
 - Current server batch I/O path is Linux-only (via `sendmmsg`/`recvmmsg` syscalls).
-- Control message handling and worker-pool optimization are still in progress.
 - P2P is experimental; symmetric NAT success rate is best-effort.
 - No complete automated test suite yet.
 
@@ -290,6 +291,14 @@ docker run -d --name easytun-server \
 - [x] Refactor server UDP RX/TX and forwarding into a configurable worker pool.
 - [ ] Optimize server-side broadcast forwarding with broadcast-to-unicast conversion.
 - [ ] Add Linux client support (TUN/TAP).
+- [x] Support config hot reload or external config loading (instead of embed-only mode).
+- [ ] Add observability metrics (connections, throughput, packet loss, forwarding latency).
+- [ ] Add CI pipeline (build, test, artifact release).
+
+## 📄 License
+
+MIT
+).
 - [x] Support config hot reload or external config loading (instead of embed-only mode).
 - [ ] Add observability metrics (connections, throughput, packet loss, forwarding latency).
 - [ ] Add CI pipeline (build, test, artifact release).
