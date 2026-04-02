@@ -4,7 +4,6 @@ package transport
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"easytun/internal/config"
 	"easytun/internal/protocol"
@@ -12,53 +11,52 @@ import (
 	"easytun/internal/tun"
 	"easytun/internal/ui"
 	"easytun/internal/util"
-	"errors"
 	"fmt"
 	"log"
 	"net"
 	"os"
 	"runtime/debug"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/pterm/pterm"
-	"golang.org/x/net/ipv4"
+	"golang.org/x/sync/errgroup"
 )
 
+// ClientTransport 负责客户端的网络传输层逻辑，包括 TUN 设备交互、UDP 数据转发及 P2P 打洞
 type ClientTransport struct {
-	natType         uint8
-	sendPacketCount *uint64
-	recvPacketCount *uint64
-	status          *uint32
+	natType         uint8   // 本地 NAT 类型
+	sendPacketCount *uint64 // 已发送数据包计数
+	recvPacketCount *uint64 // 已接收数据包计数
+	status          *uint32 // 程序运行状态
 
-	device tun.Device
+	device tun.Device // TUN 设备接口
 
-	FromTun chan []byte
-	FromNet chan<- []byte
+	FromTun chan []byte   // 从 TUN 设备接收的数据通道
+	FromNet chan<- []byte // 写入 TUN 设备的数据通道
 
 	// 服务器收发队列
-	ControlRecvChan chan *protocol.GamePacket
-	ControlSendChan chan *protocol.GamePacket
+	ControlRecvChan chan *protocol.GamePacket // 控制消息接收队列
+	ControlSendChan chan *protocol.GamePacket // 控制消息发送队列
 
-	controlConn *websocket.Conn
-	dataConn    *net.UDPConn
-	serverAddr  *net.UDPAddr
-	checkAddr   *net.UDPAddr
+	controlConn *websocket.Conn // WebSocket 控制连接封装 (为了隐藏具体实现)
+	dataConn    *net.UDPConn    // UDP 数据连接
+	serverAddr  *net.UDPAddr    // 服务端 UDP 地址
+	checkAddr   *net.UDPAddr    // P2P Check 服务地址
 
-	p2pRouter atomic.Value
-	routerMtx sync.Mutex
+	p2pRouter atomic.Value // P2P 路由表 (map[[4]byte]*stun.P2PStatus)
+	routerMtx sync.Mutex   // 路由表修改锁
 
-	localIp net.IP
-	bufPool *sync.Pool
+	localIp net.IP     // 本地虚拟 IP
+	bufPool *sync.Pool // 字节缓冲区对象池
 
-	board *ui.Board
+	board *ui.Board // UI 显示面板
 
-	noiseMgr *protocol.NoiseManager
+	noiseMgr *protocol.NoiseManager // Noise 协议管理器
 }
 
+// NewTransport 创建并初始化客户端传输层实例
 func NewTransport() *ClientTransport {
 	// TODO 优化程序状态显示
 	defer func() {
@@ -132,549 +130,80 @@ func NewTransport() *ClientTransport {
 	return t
 }
 
-func (t *ClientTransport) initUi() {
-	t.board.AddInfo("Name", config.DeviceName, nil)
-	t.board.AddInfo("Receiver Count", strconv.Itoa(config.RecvWorkers), pterm.LightCyan)
-	t.board.AddInfo("Sender Count", strconv.Itoa(config.SendWorkers), pterm.LightCyan)
-	if config.EnableP2P {
-		t.board.AddInfo("P2P status", "Enable", pterm.LightGreen)
-	} else {
-		t.board.AddInfo("P2P status", "Disable", pterm.LightRed)
-	}
-}
-
-// connectServer 创建连接
-func (t *ClientTransport) connectServer() error {
-	//rtt, loss := util.TestPing(config.ServerIp)
-	//log.Printf("与服务器延迟为 %v , 丢包率为 %v%%\n", rtt, loss)
-
-	wsUrl := fmt.Sprintf("ws://%s:%d/ws", config.ServerIp, config.ServerPort)
-	tempControlConn, _, err := websocket.DefaultDialer.Dial(wsUrl, nil)
-	if err != nil {
-		return err
-	}
-	t.controlConn = tempControlConn
-
-	serverAddr, _ := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", config.ServerIp, config.ServerPort))
-	t.serverAddr = serverAddr
-	checkAddr, _ := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", config.ServerIp, config.CheckPort))
-	t.checkAddr = checkAddr
-	localAddr, _ := net.ResolveUDPAddr("udp", ":0")
-	conn, err := net.ListenUDP("udp", localAddr)
-	conn.SetReadBuffer(4 * 1024 * 1024)
-	conn.SetWriteBuffer(4 * 1024 * 1024)
-	if err != nil {
-		return err
-	}
-	t.dataConn = conn
-	return nil
-}
-
-// handshake 与服务器握手连接
-func (t *ClientTransport) handshake() (*protocol.GamePacket, error) {
-	payload := append([]byte{t.natType}, t.noiseMgr.GetPublicKey()...)
-	handshakePacket := protocol.NewGamePacket([4]byte{}, [4]byte{}, protocol.TypeHandshake, payload)
-	data := handshakePacket.EncodePacket(t.bufPool, true, nil)
-	err := t.controlConn.WriteMessage(websocket.BinaryMessage, data)
-	t.bufPool.Put(data[:0])
-	if err != nil {
-		return nil, err
-	}
-	t.controlConn.SetReadDeadline(time.Now().Add(time.Second * config.ReadTimeout))
-	_, content, err := t.controlConn.ReadMessage()
-	if err != nil {
-		return nil, err
-	}
-	err = handshakePacket.ParsePacket(t.bufPool, content, true, nil)
-	if err != nil {
-		return nil, err
-	}
-	return handshakePacket, nil
-}
-
-// ListenAndServe 监听服务
+// ListenAndServe 启动客户端的所有核心服务协程，使用 errgroup 管理生命周期
 func (t *ClientTransport) ListenAndServe(ctx context.Context, cancel context.CancelFunc, testFlag bool, testSecond *time.Duration) {
 	t.initUi()
 
-	wg := sync.WaitGroup{}
-	wg.Add(7)
+	g, gCtx := errgroup.WithContext(ctx)
 
-	go func() {
-		defer wg.Done()
-		t.controlRecv(ctx)
-	}()
-	go func() {
-		defer wg.Done()
-		t.controlSend(ctx)
-		cancel()
-	}()
-	go func() {
-		defer wg.Done()
-		t.heartbeat(ctx)
-	}()
-	go func() {
-		defer wg.Done()
-		//log.Printf("已启用 %d 个接收者\n", config.RecvWorkers)
-		for i := 0; i < config.RecvWorkers; i++ {
-			go t.packetRecv(ctx)
-		}
-		select {
-		case <-ctx.Done():
-		}
+	// 控制平面：WebSocket 接收
+	g.Go(func() error {
+		return t.controlRecv(gCtx)
+	})
 
-	}()
-	go func() {
-		defer wg.Done()
-		//log.Printf("已启用 %d 个发送者\n", config.SendWorkers)
-		for i := 0; i < config.SendWorkers; i++ {
-			go t.packetSend(ctx)
-		}
-		select {
-		case <-ctx.Done():
-		}
+	// 控制平面：WebSocket 发送
+	g.Go(func() error {
+		err := t.controlSend(gCtx)
+		cancel() // 发送协程退出意味着连接断开，取消 context
+		return err
+	})
 
-	}()
-	go func() {
-		defer wg.Done()
-		t.device.Start(ctx, protocol.HeaderLength)
-	}()
+	// 维护：心跳
+	g.Go(func() error {
+		return t.heartbeat(gCtx)
+	})
 
-	go func() {
-		defer wg.Done()
-		t.noiseMgr.CheckSession(ctx)
-	}()
+	// 数据平面：接收者们
+	for i := 0; i < config.RecvWorkers; i++ {
+		g.Go(func() error {
+			return t.packetRecv(gCtx)
+		})
+	}
 
+	// 数据平面：发送者们
+	for i := 0; i < config.SendWorkers; i++ {
+		g.Go(func() error {
+			return t.packetSend(gCtx)
+		})
+	}
+
+	// TUN 设备
+	g.Go(func() error {
+		t.device.Start(gCtx, protocol.HeaderLength)
+		return nil
+	})
+
+	// Noise 会话清理
+	g.Go(func() error {
+		return t.noiseMgr.CheckSession(gCtx)
+	})
+
+	// 测试广播
 	if testFlag {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			t.testBroadCast(ctx, *testSecond)
-		}()
+		g.Go(func() error {
+			return t.testBroadCast(gCtx, *testSecond)
+		})
 	}
+
+	// P2P 维护
 	if config.EnableP2P {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			t.handleP2P(ctx)
-		}()
+		g.Go(func() error {
+			return t.handleP2P(gCtx)
+		})
 	}
+
+	// UI 状态清理
 	if config.EnableUi {
-		go func() {
-			select {
-			case <-ctx.Done():
-				atomic.AddUint32(t.status, 1)
-			}
-		}()
+		g.Go(func() error {
+			<-gCtx.Done()
+			atomic.AddUint32(t.status, 1)
+			return nil
+		})
 	}
 
 	atomic.AddUint32(t.status, 1)
-	wg.Wait()
-}
 
-// heartbeat 心跳消息
-func (t *ClientTransport) heartbeat(ctx context.Context) {
-	timer := time.NewTicker(time.Second * config.PingTime)
-	defer timer.Stop()
-	wsHeartbeatPacket := protocol.NewGamePacket([4]byte(t.localIp.To4()), [4]byte{}, protocol.TypePing, nil)
-	udpHeartbeatPacket := protocol.NewGamePacket([4]byte(t.localIp.To4()), [4]byte{}, protocol.TypePing, nil)
-	udpHeartbeatBytes := udpHeartbeatPacket.EncodePacket(t.bufPool, true, nil)
-	defer t.bufPool.Put(udpHeartbeatBytes[:0])
-	for {
-		select {
-		case <-timer.C:
-			t.ControlSendChan <- wsHeartbeatPacket
-			if _, err := t.dataConn.WriteToUDP(udpHeartbeatBytes, t.serverAddr); err != nil {
-				log.Println(err)
-			}
-		case <-ctx.Done():
-			return
-		}
-	}
-}
-
-// controlRecv 接收控制消息
-func (t *ClientTransport) controlRecv(ctx context.Context) {
-	defer t.controlConn.Close()
-	gp := &protocol.GamePacket{}
-	readBuffer := bytes.NewBuffer(make([]byte, 512))
-	for ctx.Err() == nil {
-		//gp := &protocol.GamePacket{}
-		t.controlConn.SetReadDeadline(time.Now().Add(time.Second * config.ReadTimeout))
-		t.controlConn.SetPongHandler(func(string) error {
-			//log.Println("pong")
-			t.controlConn.SetReadDeadline(time.Now().Add(time.Second * config.ReadTimeout))
-			return nil
-		})
-		msgType, reader, err := t.controlConn.NextReader()
-		if err != nil {
-			log.Println(err)
-			break
-		}
-		if msgType == websocket.BinaryMessage {
-			readBuffer.Reset()
-			_, err = readBuffer.ReadFrom(reader)
-			if err != nil {
-				log.Println("Read buffer error:", err)
-				continue
-			}
-			err = gp.ParseControl(readBuffer.Bytes())
-			if err != nil {
-				log.Println(err)
-				continue
-			}
-			switch gp.PType {
-			case protocol.TypeNoiseResponse:
-				targetVip := gp.SourceVirtualIp()
-				remotePub := gp.Payload[:32]
-				pendingData := gp.Payload[32:]
-				t.initiateNoise(util.IpToKey(targetVip), remotePub, pendingData)
-			case protocol.TypeP2PCheck:
-				log.Println("收到 check")
-				t.checkP2P(gp.SourceVirtualIp())
-			case protocol.TypeP2PCommand:
-				t.addP2P([4]byte(gp.SourceVirtualIp().To4()), util.BytesToIP(gp.Payload[:6]), gp.Payload[6])
-			default:
-				continue
-			}
-		}
-	}
-}
-
-// controlSend 发送控制消息
-func (t *ClientTransport) controlSend(ctx context.Context) {
-	for {
-		select {
-		case gp := <-t.ControlSendChan:
-			if gp.PType == protocol.TypePing {
-				err := t.controlConn.WriteMessage(websocket.PingMessage, nil)
-				if err != nil {
-					log.Println(err)
-					return
-				}
-			}
-			data := gp.EncodePacket(t.bufPool, true, nil)
-			err := t.controlConn.WriteMessage(websocket.BinaryMessage, data)
-			t.bufPool.Put(data[:0])
-			if err != nil {
-				log.Println(err)
-				break
-			}
-		case <-ctx.Done():
-			return
-		}
-	}
-}
-
-// packetSend 封包并发送
-func (t *ClientTransport) packetSend(ctx context.Context) {
-	batchSize := 32
-	payloadBatch := make([][]byte, 0, batchSize)
-	var err error
-	gp := &protocol.GamePacket{}
-	for {
-		select {
-		case pr := <-t.FromTun:
-			if len(pr) < 20 {
-				continue
-			}
-			payloadBatch = append(payloadBatch, pr)
-		DrainLoop:
-			for len(payloadBatch) < batchSize {
-				select {
-				case extraPacket := <-t.FromTun:
-					if len(extraPacket) < 20 {
-						continue
-					}
-					payloadBatch = append(payloadBatch, extraPacket)
-				default:
-					break DrainLoop
-				}
-			}
-			snapshot := t.p2pRouter.Load().(map[[4]byte]*stun.P2PStatus)
-			for _, p := range payloadBatch {
-				dstIp := [4]byte(p[16:20])
-				var data []byte
-				if dstIp[3] != 255 {
-					session, ok := t.noiseMgr.GetSession(dstIp)
-					if !ok {
-						query := protocol.NewGamePacket(util.IpToKey(t.localIp), dstIp, protocol.TypeNoiseHandshake, p)
-						t.ControlSendChan <- query
-						continue
-					}
-					if !session.Cipher.IsReady() {
-						session.AddPendingData(p)
-						continue
-					}
-					gp.Reset([4]byte(t.localIp.To4()), dstIp, protocol.TypeData, p)
-					data = gp.EncodePacket(t.bufPool, false, session.Cipher.Sender)
-				} else {
-					gp.Reset([4]byte(t.localIp.To4()), dstIp, protocol.TypeData, p)
-					data = gp.EncodePacket(t.bufPool, false, nil)
-				}
-				status, ok := snapshot[dstIp]
-				if !ok {
-					_, err = t.dataConn.WriteToUDP(data, t.serverAddr)
-				} else if status.Established.Load() {
-					_, err = t.dataConn.WriteToUDP(data, status.DstAddr)
-				} else {
-					_, err = t.dataConn.WriteToUDP(data, t.serverAddr)
-				}
-				t.bufPool.Put(p[:0])
-				t.bufPool.Put(data[:0])
-				if err != nil {
-					log.Println(err)
-					continue
-				}
-			}
-			atomic.AddUint64(t.sendPacketCount, uint64(len(payloadBatch)))
-			payloadBatch = payloadBatch[:0]
-		case <-ctx.Done():
-			return
-		}
-	}
-}
-
-// packetRecv 接收并解包
-func (t *ClientTransport) packetRecv(ctx context.Context) {
-	buffer := make([]byte, 4*1024*1024)
-	pongGp := protocol.NewGamePacket([4]byte(t.localIp.To4()), [4]byte{}, protocol.TypePong, nil)
-	gpBuf := make([]byte, 0, 1024)
-	pongBytes := pongGp.EncodePacketWithBuffer(gpBuf, true, nil)
-	for ctx.Err() == nil {
-		t.dataConn.SetReadDeadline(time.Now().Add(time.Second * config.ReadTimeout))
-		cnt, addr, err := t.dataConn.ReadFromUDP(buffer)
-		if err != nil {
-			var netErr *net.OpError
-			if errors.As(err, &netErr) && netErr.Timeout() {
-				continue
-			}
-			log.Println(err)
-			continue
-		}
-		{
-			atomic.AddUint64(t.recvPacketCount, 1)
-			gp := &protocol.GamePacket{}
-			err = gp.ParsePacket(t.bufPool, buffer[:cnt], true, nil)
-			switch gp.PType {
-			case protocol.TypeData:
-				srcVip := util.IpToKey(gp.SourceVirtualIp())
-				session, response, err := t.noiseMgr.HandleNoisePacket(srcVip, gp.Payload)
-				if err != nil {
-					log.Println(err)
-					t.bufPool.Put(gp.RawData[:0])
-					continue
-				}
-				if response != nil {
-					respGp := protocol.NewGamePacket(util.IpToKey(t.localIp), srcVip, protocol.TypeData, response)
-					data := respGp.EncodePacket(t.bufPool, false, nil)
-					t.dataConn.WriteToUDP(data, addr)
-					t.bufPool.Put(data[:0])
-					t.bufPool.Put(gp.RawData[:0])
-					continue
-				}
-				if session == nil {
-					continue
-				}
-				err = gp.DecryptParse(session.Cipher.Recver)
-				if err != nil {
-					log.Println(err)
-					t.bufPool.Put(gp.RawData[:0])
-					continue
-				}
-				select {
-				case t.FromNet <- gp.RawData:
-				case <-ctx.Done():
-					return
-				default:
-					t.bufPool.Put(gp.RawData[:0])
-				}
-			case protocol.TypePing:
-				snapshot := t.p2pRouter.Load().(map[[4]byte]*stun.P2PStatus)
-
-				srcVIp := util.IpToKey(gp.SourceVirtualIp())
-				status, ok := snapshot[srcVIp]
-				if ok {
-					status.DstAddr = addr
-				}
-				_, err = t.dataConn.WriteToUDP(pongBytes, addr)
-				t.bufPool.Put(gp.RawData[:0])
-				if err != nil {
-					log.Println(err)
-					continue
-				}
-			case protocol.TypePong:
-				snapshot := t.p2pRouter.Load().(map[[4]byte]*stun.P2PStatus)
-				srcVIp := util.IpToKey(gp.SourceVirtualIp())
-				status, ok := snapshot[srcVIp]
-				if !ok {
-					t.bufPool.Put(gp.RawData[:0])
-					continue
-				}
-				status.DstAddr = addr
-				status.UpdateLastSeen(true)
-				t.bufPool.Put(gp.RawData[:0])
-				controlGp := protocol.NewGamePacket(util.IpToKey(t.localIp), srcVIp, protocol.TypeP2PEstablished, nil)
-				select {
-				case t.ControlSendChan <- controlGp:
-				case <-ctx.Done():
-					return
-				default:
-					continue
-				}
-			}
-
-		}
-	}
-}
-
-func (t *ClientTransport) initiateNoise(remoteVip [4]byte, remotePub, firstPayload []byte) {
-	handshakeData, err := t.noiseMgr.HandshakeInit(remoteVip, remotePub, firstPayload)
-	if err != nil {
-		log.Printf("生成 Noise Init 失败: %v", err)
-		return
-	}
-	gp := protocol.NewGamePacket(util.IpToKey(t.localIp), remoteVip, protocol.TypeData, handshakeData)
-
-	data := gp.EncodePacket(t.bufPool, true, nil)
-	_, err = t.dataConn.WriteToUDP(data, t.serverAddr)
-	t.bufPool.Put(data[:0])
-}
-
-// P2P
-func (t *ClientTransport) handleP2P(ctx context.Context) {
-	timer := time.NewTicker(time.Second * 3)
-	pingBuf := make([]byte, 0, 1024)
-	pingData := protocol.NewGamePacket([4]byte(t.localIp.To4()), [4]byte{}, protocol.TypePing, nil).EncodePacketWithBuffer(pingBuf, true, nil)
-	defer timer.Stop()
-	for {
-		select {
-		case <-timer.C:
-			snapshot := t.p2pRouter.Load().(map[[4]byte]*stun.P2PStatus)
-			for vIp, status := range snapshot {
-				if status.IsTimeout(10) {
-					t.removeP2P(vIp)
-					continue
-				}
-				if status.Established.Load() {
-					_, err := t.dataConn.WriteToUDP(pingData, status.DstAddr)
-					if err != nil {
-						log.Println(err)
-						continue
-					}
-				} else {
-					err := t.punch(pingData, status)
-					if err != nil {
-						log.Println(err)
-						continue
-					}
-				}
-			}
-		case <-ctx.Done():
-			return
-		}
-	}
-}
-
-// 优化对称NAT的预测
-func (t *ClientTransport) punch(data []byte, status *stun.P2PStatus) error {
-	switch status.DstNatType {
-	case stun.TypeCone:
-		_, err := t.dataConn.WriteToUDP(data, status.DstAddr)
-		if err != nil {
-			return err
-		}
-	case stun.TypeSymmetric:
-		dstIp := status.DstAddr.IP
-		dstPort := status.DstAddr.Port
-		for i := -100; i < 200; i++ {
-			_, err := t.dataConn.WriteToUDP(data, &net.UDPAddr{IP: dstIp, Port: dstPort + i})
-			if err != nil {
-				return err
-			}
-			time.Sleep(time.Millisecond * 10)
-		}
-	default:
-		log.Println("暂不支持的NAT类型: ", status.DstNatType)
-	}
-	return nil
-}
-
-func (t *ClientTransport) checkP2P(dst net.IP) {
-	localAddr, _ := net.ResolveUDPAddr("udp", ":0")
-	conn, err := net.ListenUDP("udp", localAddr)
-	if err != nil {
-		log.Println(err)
-		return
-	}
-	defer conn.Close()
-	checkGp := protocol.NewGamePacket(util.IpToKey(t.localIp.To4()), util.IpToKey(dst), protocol.TypeP2PCheck, nil)
-	checkBytes := checkGp.EncodePacket(t.bufPool, true, nil)
-	_, err = conn.WriteTo(checkBytes, t.checkAddr)
-	t.bufPool.Put(checkBytes[:0])
-	if err != nil {
-		log.Println(err)
-		return
-	}
-}
-
-func (t *ClientTransport) addP2P(vIp [4]byte, addr *net.UDPAddr, natType uint8) {
-	t.routerMtx.Lock()
-	defer t.routerMtx.Unlock()
-	log.Println("尝试与 ", vIp, " 建立 p2p 连接")
-	oldSnapshot := t.p2pRouter.Load().(map[[4]byte]*stun.P2PStatus)
-	newP2P := &stun.P2PStatus{DstAddr: addr, LastSeen: time.Now().Unix(), DstNatType: natType}
-	newMap := make(map[[4]byte]*stun.P2PStatus, len(oldSnapshot)+1)
-	for k, v := range oldSnapshot {
-		newMap[k] = v
-	}
-	newMap[vIp] = newP2P
-	t.p2pRouter.Store(newMap)
-}
-
-func (t *ClientTransport) removeP2P(vIp [4]byte) {
-	t.routerMtx.Lock()
-	defer t.routerMtx.Unlock()
-	log.Println("断开与 ", vIp, " p2p 连接")
-	oldSnapshot := t.p2pRouter.Load().(map[[4]byte]*stun.P2PStatus)
-	newMap := make(map[[4]byte]*stun.P2PStatus, len(oldSnapshot)-1)
-	for k, v := range oldSnapshot {
-		if k != vIp {
-			newMap[k] = v
-		}
-	}
-	t.p2pRouter.Store(newMap)
-	controlGp := protocol.NewGamePacket(util.IpToKey(t.localIp), vIp, protocol.TypeP2PClosed, nil)
-	select {
-	case t.ControlSendChan <- controlGp:
-	default:
-		return
-	}
-}
-
-func (t *ClientTransport) testBroadCast(ctx context.Context, second time.Duration) {
-	timer := time.NewTicker(time.Millisecond * second)
-	broadCastHeader := &ipv4.Header{
-		Version:  ipv4.Version,
-		Len:      ipv4.HeaderLen,
-		TOS:      0x0,
-		TotalLen: ipv4.HeaderLen,
-		TTL:      64,
-		Protocol: 17,            // UDP
-		Dst:      net.IPv4bcast, // 255.255.255.255
-		Src:      t.localIp,     // 你的虚拟 IP
-	}
-	bch, err := broadCastHeader.Marshal()
-	if err != nil {
-		panic(err)
-	}
-	defer timer.Stop()
-	for {
-		select {
-		case <-timer.C:
-			//log.Println("执行广播...")
-			t.FromTun <- bch
-		case <-ctx.Done():
-			return
-		}
+	if err := g.Wait(); err != nil {
+		log.Printf("服务由于错误而停止: %v", err)
 	}
 }

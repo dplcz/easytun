@@ -232,7 +232,7 @@ func (m *NoiseManager) sweepSessions(timeout int64) {
 	}
 }
 
-func (m *NoiseManager) CheckSession(ctx context.Context) {
+func (m *NoiseManager) CheckSession(ctx context.Context) error {
 	// 建议 ticker 时间不要长于 timeout 时间，否则清理会延迟很久
 	ticker := time.NewTicker(time.Second * 10)
 	defer ticker.Stop()
@@ -241,7 +241,7 @@ func (m *NoiseManager) CheckSession(ctx context.Context) {
 		case <-ticker.C:
 			m.sweepSessions(30)
 		case <-ctx.Done():
-			return
+			return nil
 		}
 	}
 }
