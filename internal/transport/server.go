@@ -79,14 +79,20 @@ type Hub struct {
 	tm     *stun.TunnelManager // P2P 隧道管理器
 	mtx    sync.Mutex          // 路由表修改锁
 
-	ipMtx    sync.Mutex         // IP 分配锁
-	ipBitMap map[uint8]struct{} // 已分配 IP 的位图
+	ipMtx   sync.Mutex // IP 分配锁
+	freeIps []uint8    // 空闲 IP 地址池 (Stack)
 
 	Subnet     *net.IPNet // 虚拟网段信息
 	bufPool    *sync.Pool // 字节缓冲区对象池
 	tpPool     *sync.Pool // transferPacket 对象池
 	packetPool *sync.Pool // packet 对象池
+
+	wsHandlers map[uint8]WSHandler // WebSocket 消息处理器映射
+	wsMtx      sync.RWMutex        // 处理器映射读写锁
 }
+
+// WSHandler 定义了处理 WebSocket 控制消息的函数原型
+type WSHandler func(ctx context.Context, c *Client, gp *protocol.GamePacket) error
 
 // Run 启动服务端的所有核心服务
 func (h *Hub) Run(ctx context.Context) {

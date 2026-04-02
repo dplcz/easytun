@@ -108,77 +108,92 @@ func (c *Client) readPump(ctx context.Context, cancel context.CancelFunc) {
 				log.Println("解析控制消息失败:", err)
 				continue
 			}
-			switch gp.PType {
-			case protocol.TypeHandshake:
-				// 处理初始连接握手
-				payloadLen := len(gp.Payload)
-				if payloadLen < 33 {
-					if payloadLen != 32 {
-						log.Println(errorcode.MissingPublicKey)
-						continue
-					} else {
-						c.natType = stun.TypeUnknown
-						c.noisePublicKey = [32]byte(gp.Payload[:32])
-					}
-				} else {
-					c.natType = gp.Payload[0]
-					c.noisePublicKey = [32]byte(gp.Payload[1:33])
-					log.Printf("新客户端接入 - Virtual Ip: %s, NAT Type: %d", c.virtualIp.String(), c.natType)
-				}
-				c.hub.addClient(c)
-				// 回复握手确认
-				newGp := protocol.NewGamePacket([4]byte{}, util.IpToKey(c.virtualIp), protocol.TypeHandshake, nil)
-				select {
-				case c.controlChan <- newGp:
-				case <-ctx.Done():
-					return
-				default:
-					continue
-				}
-			case protocol.TypeNoiseHandshake:
-				// 中转 Noise 协议握手包到目标客户端
-				snapshot := c.hub.router.Load().(*routerSnapshot)
-				dstC, ok := snapshot.clientMap[util.IpToKey(gp.Destination())]
-				if !ok {
-					continue
-				}
-				pendingBuffer := c.hub.bufPool.Get().([]byte)
-				pendingBuffer = pendingBuffer[:0]
-				pendingBuffer = append(pendingBuffer, dstC.noisePublicKey[:]...)
-				pendingBuffer = append(pendingBuffer, gp.Payload...)
-				newGp := protocol.NewGamePacket(util.IpToKey(gp.Destination()), util.IpToKey(c.virtualIp), protocol.TypeNoiseResponse, pendingBuffer)
-				select {
-				case c.controlChan <- newGp:
-				case <-ctx.Done():
-					return
-				default:
-					c.hub.bufPool.Put(pendingBuffer[:0])
-					continue
-				}
-			case protocol.TypeP2PEstablished:
-				// 更新 P2P 隧道状态为已连接
-				A, B := util.IpToKey(c.virtualIp), util.IpToKey(gp.Destination())
-				t, ok := c.hub.tm.Exist(A, B)
-				if !ok {
-					c.hub.tm.AddTunnel(A, B, stun.TunnelConnected)
-				} else if t.GetStatus() == stun.TunnelInit {
-					log.Println("P2P 通道建立成功:", A, B)
-					t.ChangeStatus(stun.TunnelConnected)
-				}
-				continue
-			case protocol.TypeP2PClosed:
-				// 更新 P2P 隧道状态为连接失败/断开
-				A, B := util.IpToKey(c.virtualIp), util.IpToKey(gp.Destination())
-				t, ok := c.hub.tm.Exist(A, B)
-				if ok {
-					log.Println("P2P 通道关闭:", A, B)
-					t.ChangeStatus(stun.TunnelFailed)
-					t.AddRetryTimes()
-				}
-				continue
+			if err := c.hub.HandleWSMessage(ctx, c, gp); err != nil {
+				log.Printf("处理消息类型 %d 失败: %v", gp.PType, err)
 			}
 		}
 	}
+}
+
+// registerDefaultWSHandlers 注册系统内置的 WebSocket 消息处理器
+func (h *Hub) registerDefaultWSHandlers() {
+	h.RegisterWSHandler(protocol.TypeHandshake, h.handleHandshake)
+	h.RegisterWSHandler(protocol.TypeNoiseHandshake, h.handleNoiseHandshake)
+	h.RegisterWSHandler(protocol.TypeP2PEstablished, h.handleP2PEstablished)
+	h.RegisterWSHandler(protocol.TypeP2PClosed, h.handleP2PClosed)
+}
+
+// handleHandshake 处理客户端初始连接握手
+func (h *Hub) handleHandshake(ctx context.Context, c *Client, gp *protocol.GamePacket) error {
+	payloadLen := len(gp.Payload)
+	if payloadLen < 33 {
+		if payloadLen != 32 {
+			log.Println(errorcode.MissingPublicKey)
+			return nil
+		} else {
+			c.natType = stun.TypeUnknown
+			c.noisePublicKey = [32]byte(gp.Payload[:32])
+		}
+	} else {
+		c.natType = gp.Payload[0]
+		c.noisePublicKey = [32]byte(gp.Payload[1:33])
+		log.Printf("新客户端接入 - Virtual Ip: %s, NAT Type: %d", c.virtualIp.String(), c.natType)
+	}
+	c.hub.addClient(c)
+	// 回复握手确认
+	newGp := protocol.NewGamePacket([4]byte{}, util.IpToKey(c.virtualIp), protocol.TypeHandshake, nil)
+	select {
+	case c.controlChan <- newGp:
+	case <-ctx.Done():
+	default:
+	}
+	return nil
+}
+
+// handleNoiseHandshake 中转 Noise 协议握手包
+func (h *Hub) handleNoiseHandshake(ctx context.Context, c *Client, gp *protocol.GamePacket) error {
+	snapshot := h.router.Load().(*routerSnapshot)
+	dstC, ok := snapshot.clientMap[util.IpToKey(gp.Destination())]
+	if !ok {
+		return nil
+	}
+	pendingBuffer := h.bufPool.Get().([]byte)
+	pendingBuffer = pendingBuffer[:0]
+	pendingBuffer = append(pendingBuffer, dstC.noisePublicKey[:]...)
+	pendingBuffer = append(pendingBuffer, gp.Payload...)
+	newGp := protocol.NewGamePacket(util.IpToKey(gp.Destination()), util.IpToKey(c.virtualIp), protocol.TypeNoiseResponse, pendingBuffer)
+	select {
+	case c.controlChan <- newGp:
+	case <-ctx.Done():
+	default:
+		h.bufPool.Put(pendingBuffer[:0])
+	}
+	return nil
+}
+
+// handleP2PEstablished 处理 P2P 隧道建立成功的通知
+func (h *Hub) handleP2PEstablished(ctx context.Context, c *Client, gp *protocol.GamePacket) error {
+	A, B := util.IpToKey(c.virtualIp), util.IpToKey(gp.Destination())
+	t, ok := h.tm.Exist(A, B)
+	if !ok {
+		h.tm.AddTunnel(A, B, stun.TunnelConnected)
+	} else if t.GetStatus() == stun.TunnelInit {
+		log.Println("P2P 通道建立成功:", A, B)
+		t.ChangeStatus(stun.TunnelConnected)
+	}
+	return nil
+}
+
+// handleP2PClosed 处理 P2P 隧道关闭或失败的通知
+func (h *Hub) handleP2PClosed(ctx context.Context, c *Client, gp *protocol.GamePacket) error {
+	A, B := util.IpToKey(c.virtualIp), util.IpToKey(gp.Destination())
+	t, ok := h.tm.Exist(A, B)
+	if ok {
+		log.Println("P2P 通道关闭:", A, B)
+		t.ChangeStatus(stun.TunnelFailed)
+		t.AddRetryTimes()
+	}
+	return nil
 }
 
 // serverWS 处理来自客户端的 WebSocket 升级请求并启动维护协程
@@ -189,9 +204,7 @@ func (h *Hub) serverWS(ctx context.Context, w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	h.ipMtx.Lock()
 	ip := h.getIp()
-	h.ipMtx.Unlock()
 	if ip == nil {
 		log.Println("无法为新连接分配虚拟 IP")
 		return
@@ -207,10 +220,9 @@ func (h *Hub) serverWS(ctx context.Context, w http.ResponseWriter, r *http.Reque
 	case <-newCtx.Done():
 		log.Printf("客户端断开连接: %s\n", client.virtualIp.String())
 		// 回收 IP 和清理状态
-		h.ipMtx.Lock()
-		delete(h.ipBitMap, client.virtualIp[3])
-		h.ipMtx.Unlock()
+		h.releaseIp(client.virtualIp)
 		h.removeClient(client)
+
 		h.tm.RemoveA(util.IpToKey(client.virtualIp))
 		return
 	}
