@@ -81,7 +81,7 @@ func (t *ClientTransport) checkP2P(dst net.IP) {
 	}
 	defer conn.Close()
 	checkGp := protocol.NewGamePacket(util.IpToKey(t.localIp.To4()), util.IpToKey(dst), protocol.TypeP2PCheck, nil)
-	checkBytes := checkGp.EncodePacket(t.bufPool, true, nil)
+	checkBytes := checkGp.EncodePacket(t.bufPool, true, false, nil)
 	_, err = conn.WriteTo(checkBytes, t.checkAddr)
 	t.bufPool.Put(checkBytes[:0])
 	if err != nil {

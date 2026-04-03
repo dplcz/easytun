@@ -22,6 +22,8 @@ const (
 	TypeP2PClosed
 )
 
+const FlagCompress = 0x80
+
 const MagicNumber = 0xDAAA
 
 const HeaderLength = 9 + chacha20poly1305.NonceSize
@@ -127,7 +129,7 @@ func (g *GamePacket) parse(data []byte, parsePayload bool, cipher *CipherState) 
 	return nil
 }
 
-func (g *GamePacket) DecryptParse(cipher *CipherState) error {
+func (g *GamePacket) DecryptParse(pool *sync.Pool, cipher *CipherState) error {
 	if cipher != nil {
 		if g.Length > 0 {
 			nonceBuf := g.RawData[9 : 9+NonceLength]
@@ -140,6 +142,9 @@ func (g *GamePacket) DecryptParse(cipher *CipherState) error {
 			g.Payload = decrypted
 		}
 	}
+	if (g.PType & FlagCompress) != 0 {
+		return g.decompress(pool)
+	}
 	return nil
 }
 
@@ -151,7 +156,12 @@ func (g *GamePacket) SourceVirtualIp() net.IP {
 	return net.IPv4(g.src[0], g.src[1], g.src[2], g.src[3])
 }
 
-func (g *GamePacket) EncodePacket(pool *sync.Pool, control bool, cipher *CipherState) []byte {
+func (g *GamePacket) EncodePacket(pool *sync.Pool, control, compress bool, cipher *CipherState) []byte {
+	if compress {
+		if g.compress(pool) {
+			g.PType |= FlagCompress
+		}
+	}
 	dataLength := int(g.Length + HeaderLength)
 	data := pool.Get().([]byte)
 	if cap(data) < dataLength {

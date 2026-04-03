@@ -61,10 +61,10 @@ func (t *ClientTransport) packetSend(ctx context.Context) error {
 						continue
 					}
 					gp.Reset([4]byte(t.localIp.To4()), dstIp, protocol.TypeData, p)
-					data = gp.EncodePacket(t.bufPool, false, session.Cipher.Sender)
+					data = gp.EncodePacket(t.bufPool, false, config.EnableCompress, session.Cipher.Sender)
 				} else {
 					gp.Reset([4]byte(t.localIp.To4()), dstIp, protocol.TypeData, p)
-					data = gp.EncodePacket(t.bufPool, false, nil)
+					data = gp.EncodePacket(t.bufPool, false, false, nil)
 				}
 				status, ok := snapshot[dstIp]
 				if !ok {
@@ -74,7 +74,7 @@ func (t *ClientTransport) packetSend(ctx context.Context) error {
 				} else {
 					_, err = t.dataConn.WriteToUDP(data, t.serverAddr)
 				}
-				t.bufPool.Put(p[:0])
+				t.bufPool.Put(gp.Payload[:0])
 				t.bufPool.Put(data[:0])
 				if err != nil {
 					log.Println("UDP 发送数据失败:", err)
@@ -116,7 +116,7 @@ func (t *ClientTransport) packetRecv(ctx context.Context) error {
 				if err != nil {
 					continue
 				}
-				switch gp.PType {
+				switch gp.PType & (^uint8(protocol.FlagCompress)) {
 				case protocol.TypeData:
 					srcVip := util.IpToKey(gp.SourceVirtualIp())
 					session, response, err := t.noiseMgr.HandleNoisePacket(srcVip, gp.Payload)
@@ -127,7 +127,7 @@ func (t *ClientTransport) packetRecv(ctx context.Context) error {
 					}
 					if response != nil {
 						respGp := protocol.NewGamePacket(util.IpToKey(t.localIp), srcVip, protocol.TypeData, response)
-						data := respGp.EncodePacket(t.bufPool, false, nil)
+						data := respGp.EncodePacket(t.bufPool, false, false, nil)
 						t.dataConn.WriteToUDP(data, addr)
 						t.bufPool.Put(data[:0])
 						t.bufPool.Put(gp.RawData[:0])
@@ -136,12 +136,13 @@ func (t *ClientTransport) packetRecv(ctx context.Context) error {
 					if session == nil {
 						continue
 					}
-					err = gp.DecryptParse(session.Cipher.Recver)
+					err = gp.DecryptParse(t.bufPool, session.Cipher.Recver)
 					if err != nil {
 						log.Println(err)
 						t.bufPool.Put(gp.RawData[:0])
 						continue
 					}
+
 					select {
 					case t.FromNet <- gp.RawData:
 					case <-ctx.Done():
@@ -196,7 +197,7 @@ func (t *ClientTransport) initiateNoise(remoteVip [4]byte, remotePub, firstPaylo
 	}
 	gp := protocol.NewGamePacket(util.IpToKey(t.localIp), remoteVip, protocol.TypeData, handshakeData)
 
-	data := gp.EncodePacket(t.bufPool, true, nil)
+	data := gp.EncodePacket(t.bufPool, true, false, nil)
 	_, err = t.dataConn.WriteToUDP(data, t.serverAddr)
 	t.bufPool.Put(data[:0])
 }

@@ -21,6 +21,8 @@ import (
 
 // listenUdp 启动 UDP 监听，负责接收所有客户端发来的数据包并进行初步分发
 func (h *Hub) listenUdp(ctx context.Context) {
+	var rawPType uint8
+
 	udpAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf(":%d", config.ServerPort))
 	if err != nil {
 		log.Fatalf("UDP 地址解析失败: %v", err)
@@ -92,7 +94,9 @@ func (h *Hub) listenUdp(ctx context.Context) {
 				log.Println(errorcode.PayloadMismatch)
 				goto CleanUp
 			}
-			switch gp.PType {
+
+			rawPType = gp.PType & (^uint8(protocol.FlagCompress))
+			switch rawPType {
 			case protocol.TypePing:
 				// 处理数据平面心跳，更新客户端地址
 				snapshot := h.router.Load().(*routerSnapshot)

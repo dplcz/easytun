@@ -55,7 +55,7 @@ func (c *Client) writePump(ctx context.Context, cancel context.CancelFunc) {
 				cancel()
 				return
 			}
-			data := gp.EncodePacket(c.hub.bufPool, true, nil)
+			data := gp.EncodePacket(c.hub.bufPool, true, false, nil)
 			w.Write(data)
 			c.hub.bufPool.Put(data[:0])
 			// 如果是 NoiseResponse，清理 Payload 缓存

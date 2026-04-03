@@ -19,18 +19,20 @@ var RecvWorkers int
 var CheckPort int
 var EnableP2P bool
 var EnableUi bool
+var EnableCompress bool
 
 type Configuration struct {
-	ServerIp    string        `json:"server_ip"`
-	ServerPort  int           `json:"server_port"`
-	DeviceName  string        `json:"device_name"`
-	ReadTimeout time.Duration `json:"read_timeout"`
-	PingTime    time.Duration `json:"ping_time"`
-	SendWorkers int           `json:"send_workers"`
-	RecvWorkers int           `json:"recv_workers"`
-	CheckPort   int           `json:"check_port"`
-	EnableP2P   bool          `json:"enable_p2p"`
-	EnableUi    bool          `json:"enable_ui"`
+	ServerIp       string        `json:"server_ip"`
+	ServerPort     int           `json:"server_port"`
+	DeviceName     string        `json:"device_name"`
+	ReadTimeout    time.Duration `json:"read_timeout"`
+	PingTime       time.Duration `json:"ping_time"`
+	SendWorkers    int           `json:"send_workers"`
+	RecvWorkers    int           `json:"recv_workers"`
+	CheckPort      int           `json:"check_port"`
+	EnableP2P      bool          `json:"enable_p2p"`
+	EnableUi       bool          `json:"enable_ui"`
+	EnableCompress bool          `json:"enable_compress"`
 }
 
 func InitConfig(localPath string) {
@@ -68,6 +70,7 @@ func InitConfig(localPath string) {
 	CheckPort = conf.CheckPort
 	EnableP2P = conf.EnableP2P
 	EnableUi = conf.EnableUi
+	EnableCompress = conf.EnableCompress
 
 	//log.Println("初始化配置成功!")
 }

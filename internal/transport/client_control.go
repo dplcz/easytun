@@ -44,7 +44,7 @@ func (t *ClientTransport) connectServer() error {
 func (t *ClientTransport) handshake() (*protocol.GamePacket, error) {
 	payload := append([]byte{t.natType}, t.noiseMgr.GetPublicKey()...)
 	handshakePacket := protocol.NewGamePacket([4]byte{}, [4]byte{}, protocol.TypeHandshake, payload)
-	data := handshakePacket.EncodePacket(t.bufPool, true, nil)
+	data := handshakePacket.EncodePacket(t.bufPool, true, false, nil)
 	err := t.controlConn.WriteMessage(websocket.BinaryMessage, data)
 	t.bufPool.Put(data[:0])
 	if err != nil {
@@ -68,7 +68,7 @@ func (t *ClientTransport) heartbeat(ctx context.Context) error {
 	defer timer.Stop()
 	wsHeartbeatPacket := protocol.NewGamePacket([4]byte(t.localIp.To4()), [4]byte{}, protocol.TypePing, nil)
 	udpHeartbeatPacket := protocol.NewGamePacket([4]byte(t.localIp.To4()), [4]byte{}, protocol.TypePing, nil)
-	udpHeartbeatBytes := udpHeartbeatPacket.EncodePacket(t.bufPool, true, nil)
+	udpHeartbeatBytes := udpHeartbeatPacket.EncodePacket(t.bufPool, true, false, nil)
 	defer t.bufPool.Put(udpHeartbeatBytes[:0])
 	for {
 		select {
@@ -144,7 +144,7 @@ func (t *ClientTransport) controlSend(ctx context.Context) error {
 					return fmt.Errorf("WebSocket Ping 发送失败: %w", err)
 				}
 			} else {
-				data := gp.EncodePacket(t.bufPool, true, nil)
+				data := gp.EncodePacket(t.bufPool, true, false, nil)
 				err := t.controlConn.WriteMessage(websocket.BinaryMessage, data)
 				t.bufPool.Put(data[:0])
 				if err != nil {
