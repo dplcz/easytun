@@ -67,18 +67,21 @@ func (t *ClientTransport) packetSend(ctx context.Context) error {
 					data = gp.EncodePacket(t.bufPool, false, false, nil)
 				}
 				status, ok := snapshot[dstIp]
+				var n int
 				if !ok {
-					_, err = t.dataConn.WriteToUDP(data, t.serverAddr)
+					n, err = t.dataConn.WriteToUDP(data, t.serverAddr)
 				} else if status.Established.Load() {
-					_, err = t.dataConn.WriteToUDP(data, status.DstAddr)
+					n, err = t.dataConn.WriteToUDP(data, status.DstAddr)
 				} else {
-					_, err = t.dataConn.WriteToUDP(data, t.serverAddr)
+					n, err = t.dataConn.WriteToUDP(data, t.serverAddr)
 				}
 				t.bufPool.Put(gp.Payload[:0])
 				t.bufPool.Put(data[:0])
 				if err != nil {
 					log.Println("UDP 发送数据失败:", err)
 					continue
+				} else {
+					atomic.AddUint64(t.sendBytes, uint64(n))
 				}
 			}
 			atomic.AddUint64(t.sendPacketCount, uint64(len(payloadBatch)))
@@ -111,6 +114,7 @@ func (t *ClientTransport) packetRecv(ctx context.Context) error {
 			}
 			{
 				atomic.AddUint64(t.recvPacketCount, 1)
+				atomic.AddUint64(t.recvBytes, uint64(cnt))
 				gp := &protocol.GamePacket{}
 				err = gp.ParsePacket(t.bufPool, buffer[:cnt], true, nil)
 				if err != nil {

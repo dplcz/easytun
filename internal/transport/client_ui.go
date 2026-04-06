@@ -23,6 +23,11 @@ func (t *ClientTransport) initUi() {
 	} else {
 		t.board.AddInfo("P2P status", "Disable", pterm.LightRed)
 	}
+	if config.EnableCompress {
+		t.board.AddInfo("Compress", "Enable", pterm.LightGreen)
+	} else {
+		t.board.AddInfo("Compress", "Disable", pterm.LightRed)
+	}
 }
 
 // testBroadCast 定时构造并发送广播 IP 包，用于压力测试或连通性检测

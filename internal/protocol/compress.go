@@ -25,7 +25,7 @@ func (g *GamePacket) compress(pool *sync.Pool) bool {
 	}
 	defer pool.Put(probeBuf[:0])
 
-	n, err := lz4.CompressBlock(g.Payload[:probeLen], probeBuf, nil)
+	n, err := lz4.CompressBlock(g.Payload[:64], probeBuf, nil)
 	if err != nil || n > 50 {
 		return false
 	}

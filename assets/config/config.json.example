@@ -8,5 +8,6 @@
   "send_workers": 4,
   "recv_workers": 4,
   "enable_p2p": false,
-  "enable_ui": true
+  "enable_ui": true,
+  "enable_compress": true
 }

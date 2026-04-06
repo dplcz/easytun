@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"easytun/internal/util"
 	"fmt"
 	"sync/atomic"
 	"time"
@@ -33,6 +34,8 @@ type Board struct {
 	status      *uint32
 	sendCounter *uint64
 	recvCounter *uint64
+	sendBytes   *uint64
+	recvBytes   *uint64
 	localIp     atomic.Value
 	info        atomic.Value
 }
@@ -48,7 +51,7 @@ func init() {
 	STAT[CLOSING] = "Closing"
 }
 
-func NewBoard(status *uint32, sendCounter, recvCounter *uint64) *Board {
+func NewBoard(status *uint32, sendCounter, recvCounter, sendBytes, recvBytes *uint64) *Board {
 	infoSnapshot := &InfoSnapshot{
 		infos: make([]*Info, 0),
 	}
@@ -56,6 +59,8 @@ func NewBoard(status *uint32, sendCounter, recvCounter *uint64) *Board {
 		status:      status,
 		sendCounter: sendCounter,
 		recvCounter: recvCounter,
+		sendBytes:   sendBytes,
+		recvBytes:   recvBytes,
 	}
 	newBoard.info.Store(infoSnapshot)
 	newBoard.localIp.Store([4]byte{0, 0, 0, 0})
@@ -108,6 +113,9 @@ func (b *Board) generateInfo() string {
 			baseStr += pterm.LightCyan(fmt.Sprintf("%s: ", info.key)) + fmt.Sprintf("%s\n", info.val)
 		}
 	}
+	baseStr += pterm.LightCyan("Send Bytes: " + fmt.Sprintf("%s\n", util.FormatBytes(atomic.LoadUint64(b.sendBytes))))
+	baseStr += pterm.LightCyan("Recv Bytes: " + fmt.Sprintf("%s\n", util.FormatBytes(atomic.LoadUint64(b.recvBytes))))
+
 	return pterm.DefaultBox.WithTitle("System Info").Sprint(baseStr)
 }
 

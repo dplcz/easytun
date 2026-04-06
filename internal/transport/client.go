@@ -30,6 +30,8 @@ type ClientTransport struct {
 	sendPacketCount *uint64 // 已发送数据包计数
 	recvPacketCount *uint64 // 已接收数据包计数
 	status          *uint32 // 程序运行状态
+	sendBytes       *uint64
+	recvBytes       *uint64
 
 	device tun.Device // TUN 设备接口
 
@@ -72,6 +74,8 @@ func NewTransport() *ClientTransport {
 
 	sendPacketCount := new(uint64)
 	recvPacketCount := new(uint64)
+	sendBytes := new(uint64)
+	recvBytes := new(uint64)
 	status := new(uint32)
 	outerChan := make(chan []byte, 256)
 	innerChan := make(chan []byte, 64)
@@ -85,11 +89,13 @@ func NewTransport() *ClientTransport {
 		ControlSendChan: controlSendChan,
 		sendPacketCount: sendPacketCount,
 		recvPacketCount: recvPacketCount,
+		sendBytes:       sendBytes,
+		recvBytes:       recvBytes,
 		status:          status,
 		bufPool: &sync.Pool{New: func() interface{} {
 			return make([]byte, 2048)
 		}},
-		board: ui.NewBoard(status, sendPacketCount, recvPacketCount),
+		board: ui.NewBoard(status, sendPacketCount, recvPacketCount, sendBytes, recvBytes),
 	}
 
 	// 延迟到 ListenAndServe 中初始化的资源
