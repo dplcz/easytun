@@ -5,7 +5,6 @@ package util
 import (
 	"bufio"
 	"easytun/internal/config"
-	"easytun/internal/protocol"
 	"easytun/internal/tun"
 	"fmt"
 	"log"
@@ -26,7 +25,6 @@ func InitAll(localPath string) {
 		}
 	}()
 	config.InitConfig(localPath)
-	protocol.InitChaCha()
 	err := tun.InitWintunDLL()
 	if err != nil {
 		log.Fatal(err)

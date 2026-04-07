@@ -17,18 +17,21 @@ English | [中文](README_zh.md)
 
 ## ✨ Features
 
-- Automatically assigns a virtual IP (`10.0.6.0/24`) to each connected client.
-- Client binary embeds both DLL and config file for out-of-the-box usage.
-- Supports unicast, broadcast, and multicast forwarding.
-- Separates control and data channels to reduce data path overhead.
-- Dual-layer lock-free concurrency for routing/forwarding (atomic snapshots + channel pipeline).
-- Server UDP RX/TX + forwarding runs on a worker pool.
-- Uses `sync.Pool` and batch I/O to reduce memory allocation and syscall overhead.
-- UDP data plane is encrypted and authenticated with ChaCha20-Poly1305.
-- Built-in heartbeat and read-timeout mechanism.
-- Built-in pprof endpoint on server (default `10021`).
-- NAT type detection and experimental P2P hole punching (cone + symmetric NAT prediction).
-- P2P status tracking with keepalive and timeout cleanup.
+*   **Seamless Networking**:
+    *   **Auto-Assignment**: Automatically assigns virtual IPs upon connection; supports unicast, broadcast, and multicast forwarding.
+    *   **Out-of-the-Box**: Client embeds Wintun DLL and default config; supports both build-time embedding and external config loading.
+    *   **Smart Reconnect**: Built-in exponential backoff reconnection with real-time `Reconnecting` status display in UI.
+*   **High-Performance Architecture**:
+    *   **Lock-Free Design**: Dual-layer lock-free routing and forwarding using atomic snapshots and channel pipelines.
+    *   **Resource Optimized**: Leverages `net/netip` for address management, `sync.Pool` for memory reuse, and batch I/O to minimize latency and overhead.
+    *   **Data Compression**: Integrated LZ4 compression; significantly reduces bandwidth for compressible traffic (e.g., RDP, SSH) with smart probing to minimize CPU overhead.
+    *   **Elastic Scaling**: Configurable worker pools for both server and client to handle various concurrent loads.
+*   **Security & Traversal**:
+    *   **Hardened Security**: Session establishment via Noise IK protocol; data plane fully encrypted and authenticated using ChaCha20-Poly1305.
+    *   **Intelligent Traversal**: Experimental P2P hole punching (cone + symmetric NAT prediction) with seamless transition between relay and direct modes.
+*   **Observability**:
+    *   **Real-time Monitoring**: Optional terminal UI panel showing connection status, virtual IP, real-time throughput (Bytes), and system load.
+    *   **Deep Diagnostics**: Built-in pprof endpoint on the server for performance profiling and bottleneck identification.
 
 ## 🧱 Project Structure
 
@@ -69,12 +72,13 @@ Packet header format:
 [magic(2)][type(1)][dst(4)][length(2)][nonce(12)][ciphertext]
 ```
 
-Encryption notes:
+Compression & Encryption notes:
 
-- Data plane uses ChaCha20-Poly1305 AEAD.
-- Nonce = `src(4)` + `counter(8)`; `src` is recovered from the nonce.
-- `length` is ciphertext length (payload + 16-byte tag).
-- AAD = header without nonce (`[magic][type][dst][length]`).
+- **Compression**: Integrated LZ4 compression, toggled via `enable_compress`. Smart probing: Only payloads > 128 bytes are considered; a 64-byte probe is compressed first to verify compressibility. The compression flag is stored in the most significant bit (`0x80`) of the `type` field.
+- **Encryption**: Session bootstrap uses Noise IK (`25519 + ChaChaPoly + SHA256`). Data plane uses ChaCha20-Poly1305 AEAD after the Noise handshake completes.
+- **Nonce**: `src(4)` + `counter(8)`; `src` is recovered from the nonce.
+- **Length**: ciphertext length (payload + 16-byte tag). If compressed, payload is the LZ4-compressed data.
+- **AAD**: header without nonce (`[magic][type][dst][length]`).
 
 ## 🧰 Requirements
 
@@ -103,7 +107,9 @@ Example:
   "ping_time": 1,
   "send_workers": 4,
   "recv_workers": 4,
-  "key": "32-byte-shared-key"
+  "enable_p2p": false,
+  "enable_ui": true,
+  "enable_compress": true
 }
 ```
 
@@ -118,6 +124,9 @@ Fields:
 - `send_workers`: number of client send workers.
 - `recv_workers`: number of client receive workers.
 - `key`: shared key for UDP encryption (32 bytes).
+- `enable_p2p`: enable experimental P2P NAT traversal.
+- `enable_ui`: enable the terminal monitoring panel.
+- `enable_compress`: enable LZ4 data compression.
 
 ### 2) Server Config
 
@@ -270,7 +279,6 @@ docker run -d --name easytun-server \
 
 - Client currently supports Windows only (via Wintun).
 - Current server batch I/O path is Linux-only (via `sendmmsg`/`recvmmsg` syscalls).
-- Control message handling and worker-pool optimization are still in progress.
 - P2P is experimental; symmetric NAT success rate is best-effort.
 - No complete automated test suite yet.
 
@@ -281,7 +289,16 @@ docker run -d --name easytun-server \
 - [ ] Add HTTPS support for control messages.
 - [x] Add UDP data encryption support.
 - [x] Refactor server UDP RX/TX and forwarding into a configurable worker pool.
+- [ ] Optimize server-side broadcast forwarding with broadcast-to-unicast conversion.
 - [ ] Add Linux client support (TUN/TAP).
+- [x] Support config hot reload or external config loading (instead of embed-only mode).
+- [ ] Add observability metrics (connections, throughput, packet loss, forwarding latency).
+- [ ] Add CI pipeline (build, test, artifact release).
+
+## 📄 License
+
+MIT
+).
 - [x] Support config hot reload or external config loading (instead of embed-only mode).
 - [ ] Add observability metrics (connections, throughput, packet loss, forwarding latency).
 - [ ] Add CI pipeline (build, test, artifact release).

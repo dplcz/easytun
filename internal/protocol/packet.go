@@ -1,50 +1,33 @@
 package protocol
 
 import (
-	"crypto/cipher"
-	"crypto/rand"
-	"easytun/internal/config"
 	"easytun/internal/errorcode"
 	"encoding/binary"
 	"net"
 	"sync"
-	"sync/atomic"
 
 	"golang.org/x/crypto/chacha20poly1305"
 )
 
 const (
 	TypeHandshake = iota + 1
+	TypeNoiseHandshake
+	TypeNoiseResponse
 	TypePing
 	TypePong
 	TypeData
-	TypeCheck
+	TypeP2PCheck
 	TypeP2PCommand
 	TypeP2PEstablished
 	TypeP2PClosed
 )
 
+const FlagCompress = 0x80
+
 const MagicNumber = 0xDAAA
 
 const HeaderLength = 9 + chacha20poly1305.NonceSize
 const NonceLength = chacha20poly1305.NonceSize
-
-var aead cipher.AEAD
-var globalNonce uint64
-
-func InitChaCha() {
-	var err error
-	aead, err = chacha20poly1305.New(config.ClientKey)
-	if err != nil {
-		panic(err)
-	}
-	var b [8]byte
-	_, err = rand.Read(b[:])
-	if err != nil {
-		panic(err)
-	}
-	globalNonce = binary.BigEndian.Uint64(b[:])
-}
 
 type GamePacket struct {
 	src     [4]byte
@@ -91,8 +74,13 @@ func (g *GamePacket) CalculateMs() int {
 
 // [magic 2][pType 1][dst 4][length 2][nonce 12(src 4 + label 8)][payload]
 
-func (g *GamePacket) encode(b []byte, control bool) []byte {
-	nonceVal := atomic.AddUint64(&globalNonce, 1)
+func (g *GamePacket) encode(b []byte, control bool, cipher *CipherState) []byte {
+	var nonceVal uint64
+	if cipher != nil {
+		nonceVal = cipher.GetNonce()
+	} else {
+		nonceVal = 0
+	}
 	b = binary.BigEndian.AppendUint16(b, uint16(MagicNumber))
 	b = append(b, g.PType)
 	b = append(b, g.dst[:]...)
@@ -102,8 +90,8 @@ func (g *GamePacket) encode(b []byte, control bool) []byte {
 	nonceBuf := b[HeaderLength-NonceLength : HeaderLength]
 	if g.Length > 0 {
 		header := b[:HeaderLength-NonceLength]
-		if !control && aead != nil {
-			b = aead.Seal(b, nonceBuf, g.Payload, header)
+		if !control && cipher != nil {
+			b = cipher.Encrypt(b, nonceBuf, g.Payload, header)
 		} else {
 			b = append(b, g.Payload...)
 		}
@@ -111,7 +99,7 @@ func (g *GamePacket) encode(b []byte, control bool) []byte {
 	return b
 }
 
-func (g *GamePacket) parse(data []byte, parsePayload bool) error {
+func (g *GamePacket) parse(data []byte, parsePayload bool, cipher *CipherState) error {
 	if len(data) < HeaderLength {
 		return errorcode.PacketTooShort
 	}
@@ -125,18 +113,38 @@ func (g *GamePacket) parse(data []byte, parsePayload bool) error {
 	nonceBuf := data[9 : 9+NonceLength]
 
 	g.src = [4]byte(nonceBuf)
-	if aead != nil {
+	if cipher != nil {
 		if parsePayload && g.Length > 0 {
 			header := data[:HeaderLength-NonceLength]
 			ciphertext := data[HeaderLength:]
-			decrypted, err := aead.Open(ciphertext[:0], nonceBuf, ciphertext, header)
+			decrypted, err := cipher.Decrypt(ciphertext[:0], nonceBuf, ciphertext, header)
+			if err != nil {
+				return err
+			}
+			g.Payload = decrypted
+		}
+	} else {
+		g.Payload = data[HeaderLength:]
+	}
+	return nil
+}
+
+func (g *GamePacket) DecryptParse(pool *sync.Pool, cipher *CipherState) error {
+	if cipher != nil {
+		if g.Length > 0 {
+			nonceBuf := g.RawData[9 : 9+NonceLength]
+			header := g.RawData[:HeaderLength-NonceLength]
+			ciphertext := g.RawData[HeaderLength:]
+			decrypted, err := cipher.Decrypt(ciphertext[:0], nonceBuf, ciphertext, header)
 			if err != nil {
 				return err
 			}
 			g.Payload = decrypted
 		}
 	}
-
+	if (g.PType & FlagCompress) != 0 {
+		return g.decompress(pool)
+	}
 	return nil
 }
 
@@ -148,7 +156,12 @@ func (g *GamePacket) SourceVirtualIp() net.IP {
 	return net.IPv4(g.src[0], g.src[1], g.src[2], g.src[3])
 }
 
-func (g *GamePacket) EncodePacket(pool *sync.Pool, control bool) []byte {
+func (g *GamePacket) EncodePacket(pool *sync.Pool, control, compress bool, cipher *CipherState) []byte {
+	if compress {
+		if g.compress(pool) {
+			g.PType |= FlagCompress
+		}
+	}
 	dataLength := int(g.Length + HeaderLength)
 	data := pool.Get().([]byte)
 	if cap(data) < dataLength {
@@ -156,20 +169,16 @@ func (g *GamePacket) EncodePacket(pool *sync.Pool, control bool) []byte {
 		data = make([]byte, dataLength)
 	}
 	data = data[:0]
-	data = g.encode(data, control)
+	data = g.encode(data, control, cipher)
 	return data
 }
 
-func (g *GamePacket) EncodePacketWithBuffer(data []byte, control bool) []byte {
-	data = g.encode(data, control)
+func (g *GamePacket) EncodePacketWithBuffer(data []byte, control bool, cipher *CipherState) []byte {
+	data = g.encode(data, control, cipher)
 	return data
 }
 
-func (g *GamePacket) ParseHeader(data []byte) error {
-	return g.parse(data, false)
-}
-
-func (g *GamePacket) ParsePacket(pool *sync.Pool, content []byte, parsePayload bool) error {
+func (g *GamePacket) ParsePacket(pool *sync.Pool, content []byte, parsePayload bool, cipher *CipherState) error {
 	data := pool.Get().([]byte)
 	if cap(data) < len(content) {
 		pool.Put(data[:0])
@@ -178,7 +187,7 @@ func (g *GamePacket) ParsePacket(pool *sync.Pool, content []byte, parsePayload b
 	data = data[:len(content)]
 	copy(data, content)
 	g.RawData = data
-	return g.parse(data, parsePayload)
+	return g.parse(data, parsePayload, cipher)
 }
 
 func (g *GamePacket) ParseControl(data []byte) error {

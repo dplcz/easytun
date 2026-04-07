@@ -32,9 +32,9 @@ func main() {
 		cancel() // 触发 Context 取消，通知所有关联的协程停止工作
 	}()
 	if *isTest {
-		tp.ListenAndServe(ctx, cancel, *isTest, &second)
+		tp.ListenAndServe(ctx, *isTest, &second)
 	} else {
-		tp.ListenAndServe(ctx, cancel, *isTest, nil)
+		tp.ListenAndServe(ctx, *isTest, nil)
 	}
 
 }
