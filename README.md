@@ -24,12 +24,13 @@ English | [中文](README_zh.md)
 *   **High-Performance Architecture**:
     *   **Lock-Free Design**: Dual-layer lock-free routing and forwarding using atomic snapshots and channel pipelines.
     *   **Resource Optimized**: Leverages `net/netip` for address management, `sync.Pool` for memory reuse, and batch I/O to minimize latency and overhead.
+    *   **Data Compression**: Integrated LZ4 compression; significantly reduces bandwidth for compressible traffic (e.g., RDP, SSH) with smart probing to minimize CPU overhead.
     *   **Elastic Scaling**: Configurable worker pools for both server and client to handle various concurrent loads.
 *   **Security & Traversal**:
     *   **Hardened Security**: Session establishment via Noise IK protocol; data plane fully encrypted and authenticated using ChaCha20-Poly1305.
     *   **Intelligent Traversal**: Experimental P2P hole punching (cone + symmetric NAT prediction) with seamless transition between relay and direct modes.
 *   **Observability**:
-    *   **Real-time Monitoring**: Optional terminal UI panel showing connection status, virtual IP, throughput, and system load.
+    *   **Real-time Monitoring**: Optional terminal UI panel showing connection status, virtual IP, real-time throughput (Bytes), and system load.
     *   **Deep Diagnostics**: Built-in pprof endpoint on the server for performance profiling and bottleneck identification.
 
 ## 🧱 Project Structure
@@ -71,13 +72,13 @@ Packet header format:
 [magic(2)][type(1)][dst(4)][length(2)][nonce(12)][ciphertext]
 ```
 
-Encryption notes:
+Compression & Encryption notes:
 
-- Session bootstrap uses Noise IK (`25519 + ChaChaPoly + SHA256`).
-- Data plane uses ChaCha20-Poly1305 AEAD after the Noise handshake completes.
-- Nonce = `src(4)` + `counter(8)`; `src` is recovered from the nonce.
-- `length` is ciphertext length (payload + 16-byte tag).
-- AAD = header without nonce (`[magic][type][dst][length]`).
+- **Compression**: Integrated LZ4 compression, toggled via `enable_compress`. Smart probing: Only payloads > 128 bytes are considered; a 64-byte probe is compressed first to verify compressibility. The compression flag is stored in the most significant bit (`0x80`) of the `type` field.
+- **Encryption**: Session bootstrap uses Noise IK (`25519 + ChaChaPoly + SHA256`). Data plane uses ChaCha20-Poly1305 AEAD after the Noise handshake completes.
+- **Nonce**: `src(4)` + `counter(8)`; `src` is recovered from the nonce.
+- **Length**: ciphertext length (payload + 16-byte tag). If compressed, payload is the LZ4-compressed data.
+- **AAD**: header without nonce (`[magic][type][dst][length]`).
 
 ## 🧰 Requirements
 
@@ -107,7 +108,8 @@ Example:
   "send_workers": 4,
   "recv_workers": 4,
   "enable_p2p": false,
-  "enable_ui": true
+  "enable_ui": true,
+  "enable_compress": true
 }
 ```
 
@@ -124,6 +126,7 @@ Fields:
 - `key`: shared key for UDP encryption (32 bytes).
 - `enable_p2p`: enable experimental P2P NAT traversal.
 - `enable_ui`: enable the terminal monitoring panel.
+- `enable_compress`: enable LZ4 data compression.
 
 ### 2) Server Config
 

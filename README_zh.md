@@ -24,12 +24,13 @@
 *   **高性能架构**：
     *   **无锁设计**：服务端采用原子快照与通道流水线，实现双层无锁路由转发。
     *   **资源优化**：利用 `net/netip` 地址管理、`sync.Pool` 内存复用及批量 I/O，显著降低延迟与开销。
+    *   **数据压缩**：集成 LZ4 压缩算法，显著降低可压缩流量（如 RDP、SSH 等）的带宽占用；内置智能探测机制，避免对不可压缩数据浪费 CPU。
     *   **弹性伸缩**：服务端与客户端均支持可配工作池，适配不同并发负载。
 *   **安全与穿透**：
     *   **金融级加密**：基于 Noise IK 协议建立会话，数据面采用 ChaCha20-Poly1305 全量加密与鉴别。
     *   **智能穿透**：内置实验性 P2P 打洞（支持锥形与对称 NAT 预测），实现转发与直连无感切换。
 *   **可观测性**：
-    *   **实时监控**：可选终端 UI 面板，动态展示连接状态、虚拟 IP、实时吞吐量及系统负载。
+    *   **实时监控**：可选终端 UI 面板，动态展示连接状态、虚拟 IP、实时吞吐量（Bytes）及系统负载。
     *   **深度诊断**：服务端内置 pprof 性能分析接口，方便排查性能瓶颈。
 
 ## 🧱 项目结构
@@ -71,13 +72,14 @@
 [magic(2)][type(1)][dst(4)][length(2)][nonce(12)][ciphertext]
 ```
 
-加密说明：
+压缩与加密说明：
 
-- 会话建立使用 Noise IK（`25519 + ChaChaPoly + SHA256`）。
-- 数据面在握手完成后使用 ChaCha20-Poly1305 AEAD。
-- Nonce = `src(4)` + `counter(8)`，`src` 从 nonce 中恢复。
-- `length` 为密文长度（payload + 16 字节鉴别标签）。
-- AAD 为不含 nonce 的头部（`[magic][type][dst][length]`）。
+- **数据压缩**：集成 LZ4 压缩，通过 `enable_compress` 开启。智能探测：仅对大于 128 字节的 Payload 进行压缩，且先通过 64 字节探测块确认压缩效果。压缩标志位存储在 `type` 字段的最高位（`0x80`）。
+- **会话建立**：使用 Noise IK（`25519 + ChaChaPoly + SHA256`）。
+- **数据面**：在握手完成后使用 ChaCha20-Poly1305 AEAD。
+- **Nonce**：`src(4)` + `counter(8)`，`src` 从 nonce 中恢复。
+- **长度字段**：为密文长度（payload + 16 字节鉴别标签）。若开启压缩，Payload 为 LZ4 压缩后的数据。
+- **AAD**：为不含 nonce 的头部（`[magic][type][dst][length]`）。
 
 ## 🧰 环境要求
 
@@ -107,7 +109,8 @@
   "send_workers": 4,
   "recv_workers": 4,
   "enable_p2p": false,
-  "enable_ui": true
+  "enable_ui": true,
+  "enable_compress": true
 }
 ```
 
@@ -121,8 +124,9 @@
 - `ping_time`：心跳间隔（秒）。
 - `send_workers`：客户端发包协程数。
 - `recv_workers`：客户端收包协程数。
-- `enable_p2p`：是否启用P2P，若启用则每次运行客户端前会测试网络NAT类型。
-- `enable_ui`：是否启用UI监控面板。
+- `enable_p2p`：是否启用 P2P 打洞。
+- `enable_ui`：是否启用终端 UI 监控面板。
+- `enable_compress`：是否启用 LZ4 数据压缩。
 
 ### 2) 服务端配置
 
