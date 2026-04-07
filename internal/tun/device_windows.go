@@ -19,6 +19,9 @@ type Tun struct {
 	DeviceName string
 	Ip         net.IP
 	Subnet     *net.IPNet
+
+	domain string
+
 	// tun收发队列
 	toNet   chan<- []byte
 	fromNet <-chan []byte
@@ -27,8 +30,23 @@ type Tun struct {
 	bufPool *sync.Pool
 }
 
-func NewTun(name string, ipByte []byte, toNet, fromNet chan []byte, bufPool *sync.Pool) Device {
+func setupDnsNrpt(domain string, dnsServer string) {
+	clearCmd := fmt.Sprintf("Get-DnsClientNrptRule | Where-Object {$_.Namespace -eq '%s'} | Remove-DnsClientNrptRule -ErrorAction SilentlyContinue", domain)
+	exec.Command("powershell", "-Command", clearCmd).Run()
+
+	addCmd := fmt.Sprintf("Add-DnsClientNrptRule -Namespace '%s' -NameServers '%s'", domain, dnsServer)
+
+	cmd := exec.Command("powershell", "-Command", addCmd)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		panic(fmt.Sprintf("NRPT 配置失败: %v, Output: %s", err, string(output)))
+	}
+	//log.Println("NRPT 规则已添加")
+}
+
+func NewTun(name, domain string, ipByte []byte, toNet, fromNet chan []byte, bufPool *sync.Pool) Device {
 	ip := net.IP(ipByte)
+	// TODO 子网掩码可以配置，并且dns通过子网掩码自动计算
+	dnsIp := net.IP{ip[0], ip[1], ip[2], 1}
 	mask := net.CIDRMask(24, 32)
 	subnet := &net.IPNet{
 		IP:   ip.Mask(mask),
@@ -59,12 +77,14 @@ func NewTun(name string, ipByte []byte, toNet, fromNet chan []byte, bufPool *syn
 	if output, err := cmd.CombinedOutput(); err != nil {
 		panic(fmt.Sprintf("配置 IP 失败: %v, Output: %s", err, string(output)))
 	}
+	setupDnsNrpt(domain, dnsIp.String())
 	//log.Println("配置专用网络成功!")
 
 	return &Tun{
 		Ip:         ip,
 		Subnet:     subnet,
 		DeviceName: name,
+		domain:     domain,
 		adapter:    adapter,
 		session:    session,
 		toNet:      toNet,
@@ -93,6 +113,9 @@ func (t *Tun) Start(ctx context.Context, headerLength int) {
 
 // Stop
 func (t *Tun) Close() error {
+	clearCmd := fmt.Sprintf("Get-DnsClientNrptRule | Where-Object {$_.Namespace -eq '%s'} | Remove-DnsClientNrptRule -ErrorAction SilentlyContinue", t.domain)
+	exec.Command("powershell", "-Command", clearCmd).Run()
+
 	t.session.End()
 	err := t.adapter.Close()
 	return err

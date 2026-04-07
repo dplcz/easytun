@@ -13,6 +13,8 @@ const (
 	TypeHandshake = iota + 1
 	TypeNoiseHandshake
 	TypeNoiseResponse
+	TypeDnsRequest
+	TypeDnsResponse
 	TypePing
 	TypePong
 	TypeData

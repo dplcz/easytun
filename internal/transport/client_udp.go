@@ -45,7 +45,10 @@ func (t *ClientTransport) packetSend(ctx context.Context) error {
 			for _, p := range payloadBatch {
 				dstIp := [4]byte(p[16:20])
 				var data []byte
-				if dstIp[3] != 255 {
+				if dstIp[3] == 1 && len(p) > 28 {
+					gp.Reset([4]byte(t.localIp.To4()), dstIp, protocol.TypeDnsRequest, p[28:])
+					data = gp.EncodePacket(t.bufPool, false, false, nil)
+				} else if dstIp[3] != 255 {
 					session, ok := t.noiseMgr.GetSession(dstIp)
 					if !ok {
 						query := protocol.NewGamePacket(util.IpToKey(t.localIp), dstIp, protocol.TypeNoiseHandshake, p)

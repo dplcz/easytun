@@ -175,7 +175,7 @@ func (t *ClientTransport) ListenAndServe(ctx context.Context, testFlag bool, tes
 				if t.device != nil {
 					t.device.Close()
 				}
-				t.device = tun.NewTun(config.DeviceName, t.localIp, t.FromTun, t.FromNet, t.bufPool)
+				t.device = tun.NewTun(config.DeviceName, ".et", t.localIp, t.FromTun, t.FromNet, t.bufPool)
 				// 启动 TUN 协程
 				go t.device.Start(pCtx, protocol.HeaderLength)
 			}
