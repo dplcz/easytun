@@ -1,12 +1,12 @@
 package config
 
 import (
-	"bytes"
 	"easytun/assets"
-	"encoding/json"
 	"log"
 	"os"
 	"time"
+
+	"github.com/pelletier/go-toml/v2"
 )
 
 var ServerIp string
@@ -22,55 +22,92 @@ var EnableUi bool
 var EnableCompress bool
 
 type Configuration struct {
-	ServerIp       string        `json:"server_ip"`
-	ServerPort     int           `json:"server_port"`
-	DeviceName     string        `json:"device_name"`
-	ReadTimeout    time.Duration `json:"read_timeout"`
-	PingTime       time.Duration `json:"ping_time"`
-	SendWorkers    int           `json:"send_workers"`
-	RecvWorkers    int           `json:"recv_workers"`
-	CheckPort      int           `json:"check_port"`
-	EnableP2P      bool          `json:"enable_p2p"`
-	EnableUi       bool          `json:"enable_ui"`
-	EnableCompress bool          `json:"enable_compress"`
+	Server      ServerConfig      `toml:"server"`
+	Device      DeviceConfig      `toml:"device"`
+	Performance PerformanceConfig `toml:"performance"`
+	Features    FeaturesConfig    `toml:"features"`
+}
+
+type ServerConfig struct {
+	ServerIp   string `toml:"server_ip"`
+	ServerPort int    `toml:"server_port"`
+	CheckPort  int    `toml:"check_port"`
+}
+
+type DeviceConfig struct {
+	DeviceName string `toml:"device_name"`
+}
+
+type PerformanceConfig struct {
+	ReadTimeout string `toml:"read_timeout"`
+	PingTime    string `toml:"ping_time"`
+	SendWorkers int    `toml:"send_workers"`
+	RecvWorkers int    `toml:"recv_workers"`
+}
+
+type FeaturesConfig struct {
+	EnableP2P      bool `toml:"enable_p2p"`
+	EnableUi       bool `toml:"enable_ui"`
+	EnableCompress bool `toml:"enable_compress"`
 }
 
 func InitConfig(localPath string) {
 	conf := Configuration{}
-	var confBuf *bytes.Reader
+	var data []byte
 	var err error
-	if localPath == "" {
-		confBuf = bytes.NewReader(assets.ConfigBytes)
-		err = json.NewDecoder(confBuf).Decode(&conf)
+
+	// 2. 决定使用哪个数据源
+	if localPath != "" {
+		// 使用用户指定的配置文件
+		//log.Println("loading config file:", localPath)
+		data, err = os.ReadFile(localPath)
+	} else if _, err = os.Stat("config.toml"); err == nil {
+		// 使用本地已存在的 config.toml
+		//log.Println("loading local config file: config.toml")
+		data, err = os.ReadFile("config.toml")
 	} else {
-		log.Println("loading config file:", localPath)
-		file, err := os.Open(localPath)
-		if err != nil {
-			panic(err)
-		}
-		defer file.Close()
-		err = json.NewDecoder(file).Decode(&conf)
+		// 使用内置的兜底默认配置
+		//log.Println("loading embedded default config")
+		data = assets.ConfigBytes
+		err = nil
 	}
 	if err != nil {
 		panic(err)
 	}
-	ServerIp = conf.ServerIp
-	ServerPort = conf.ServerPort
-	DeviceName = conf.DeviceName
-	ReadTimeout = conf.ReadTimeout
-	PingTime = conf.PingTime
-	SendWorkers = conf.SendWorkers
-	if conf.SendWorkers < 1 {
-		conf.SendWorkers = 1
+	if err = toml.Unmarshal(data, &conf); err != nil {
+		panic(err)
 	}
-	RecvWorkers = conf.RecvWorkers
-	if conf.RecvWorkers < 1 {
-		conf.RecvWorkers = 1
-	}
-	CheckPort = conf.CheckPort
-	EnableP2P = conf.EnableP2P
-	EnableUi = conf.EnableUi
-	EnableCompress = conf.EnableCompress
 
-	//log.Println("初始化配置成功!")
+	ServerIp = conf.Server.ServerIp
+	ServerPort = conf.Server.ServerPort
+	CheckPort = conf.Server.CheckPort
+	DeviceName = conf.Device.DeviceName
+	if len(DeviceName) > 10 || len(DeviceName) < 1 {
+		panic("Device name must be between 1 and 10")
+	}
+
+	// 解析 Duration 字符串
+	ReadTimeout, err = time.ParseDuration(conf.Performance.ReadTimeout)
+	if err != nil {
+		log.Printf("failed to parse read_timeout: %v, use default 10s\n", err)
+		ReadTimeout = 10 * time.Second
+	}
+
+	PingTime, err = time.ParseDuration(conf.Performance.PingTime)
+	if err != nil {
+		log.Printf("failed to parse ping_time: %v, use default 1s\n", err)
+		PingTime = 1 * time.Second
+	}
+
+	SendWorkers = conf.Performance.SendWorkers
+	if SendWorkers < 1 {
+		SendWorkers = 1
+	}
+	RecvWorkers = conf.Performance.RecvWorkers
+	if RecvWorkers < 1 {
+		RecvWorkers = 1
+	}
+	EnableP2P = conf.Features.EnableP2P
+	EnableUi = conf.Features.EnableUi
+	EnableCompress = conf.Features.EnableCompress
 }

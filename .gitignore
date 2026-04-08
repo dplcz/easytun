@@ -24,6 +24,8 @@ __pycache__/
 # C extensions
 *.so
 
+config.toml.example
+
 # Distribution / packaging
 .Python
 build/

@@ -1,0 +1,17 @@
+[server]
+# 服务端监听的公网 IP (默认为空表示监听所有网卡)
+server_ip = ""
+# 服务端控制面/数据面监听端口 (需同时放行 TCP 和 UDP)
+server_port = 10011
+# P2P 检测 UDP 监听端口
+check_port = 10012
+
+[device]
+# 默认设备标识
+device_name = "default"
+
+[performance]
+# 服务端读超时时间
+read_timeout = "10s"
+# 服务端内部检测间隔
+ping_time = "1s"

@@ -1,0 +1,29 @@
+[server]
+# 服务端公网 IP 地址
+server_ip = "insert-your-server-ip-here"
+# 服务端控制面/数据面端口 (TCP+UDP 同端口)
+server_port = 10011
+# P2P 检测 UDP 端口 (服务端监听该端口)
+check_port = 10012
+
+[device]
+# Wintun 网卡名称 (同时用于域名访问)
+device_name = "easytun"
+
+[performance]
+# 读超时时间 (支持单位: ms, s, m, h)
+read_timeout = "10s"
+# 心跳包发送间隔 (支持单位: ms, s, m, h)
+ping_time = "1s"
+# 客户端发包协程数 (工作池大小)
+send_workers = 4
+# 客户端收包协程数 (工作池大小)
+recv_workers = 4
+
+[features]
+# 是否启用 P2P 打洞 (实验性功能)
+enable_p2p = false
+# 是否启用终端 UI 监控面板
+enable_ui = true
+# 是否启用 LZ4 数据压缩
+enable_compress = true
