@@ -63,7 +63,7 @@ func (h *Hub) listenUdp(ctx context.Context) {
 		msgs[i].Buffers = [][]byte{make([]byte, 2048)}
 	}
 	for ctx.Err() == nil {
-		h.UdpConn.SetReadDeadline(time.Now().Add(config.ReadTimeout * time.Second))
+		h.UdpConn.SetReadDeadline(time.Now().Add(config.ReadTimeout))
 		// 使用 ReadBatch 提升读取性能
 		count, err := h.PacketConn.ReadBatch(msgs, 0)
 		if err != nil {
@@ -103,6 +103,23 @@ func (h *Hub) listenUdp(ctx context.Context) {
 				srcVip := util.IpToKey(gp.SourceVirtualIp())
 				if client, ok := snapshot.clientMap[srcVip]; ok {
 					client.updateAddrCheck(srcAddrPort)
+				}
+				goto CleanUp
+			case protocol.TypeDnsRequest:
+				dnsResp, err := h.buildDnsResponse(gp.Payload)
+				if err != nil {
+					log.Println("parse dns error: ", err)
+					goto CleanUp
+				}
+				dnsGp := protocol.NewGamePacket([4]byte{}, util.IpToKey(gp.SourceVirtualIp()), protocol.TypeDnsResponse, dnsResp)
+				p := h.packetPool.Get().(*packet)
+				p.data = dnsGp.EncodePacket(h.bufPool, false, false, nil)
+				p.broadcast = false
+				p.dstAddr = srcAddrPort
+				select {
+				case h.packetChan <- p:
+				default:
+					log.Println("packet chan 已满，丢弃dns响应")
 				}
 				goto CleanUp
 			case protocol.TypeData:
@@ -152,7 +169,7 @@ func (h *Hub) listenCheck(ctx context.Context) {
 	h.CheckUdpConn = conn
 	buffer := make([]byte, 1024*2)
 	for ctx.Err() == nil {
-		h.CheckUdpConn.SetReadDeadline(time.Now().Add(config.ReadTimeout * time.Second))
+		h.CheckUdpConn.SetReadDeadline(time.Now().Add(config.ReadTimeout))
 		cnt, addr, err := h.CheckUdpConn.ReadFromUDP(buffer)
 		if err != nil {
 			var netErr *net.OpError
@@ -190,7 +207,7 @@ func (h *Hub) listenCheck(ctx context.Context) {
 	}
 }
 
-// writeUdpPacket 批量将数据包写回到 UDP 网络
+// writeUdpPacket 批量将数据包写回
 func (h *Hub) writeUdpPacket(ctx context.Context) {
 	batchSize := 16
 	msgs := make([]ipv4.Message, 0, batchSize*4)

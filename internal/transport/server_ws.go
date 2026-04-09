@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"easytun/internal/config"
-	"easytun/internal/errorcode"
 	"easytun/internal/protocol"
 	"easytun/internal/stun"
 	"easytun/internal/util"
@@ -76,7 +75,7 @@ func (c *Client) readPump(ctx context.Context, cancel context.CancelFunc) {
 	pongGp := protocol.NewGamePacket([4]byte{}, [4]byte{}, protocol.TypePong, nil)
 	c.controlConn.SetPingHandler(func(string) error {
 		// 收到 Ping 后重置超时时间并回复 Pong
-		c.controlConn.SetReadDeadline(time.Now().Add(config.ReadTimeout * time.Second))
+		c.controlConn.SetReadDeadline(time.Now().Add(config.ReadTimeout))
 		c.controlChan <- pongGp
 		return nil
 	})
@@ -134,23 +133,16 @@ func (h *Hub) handleHandshake(ctx context.Context, c *Client, gp *protocol.GameP
 		1.client本地缓存
 		2.client提前续期
 	*/
-	payloadLen := len(gp.Payload)
-	if payloadLen < 33 {
-		if payloadLen != 32 {
-			log.Println(errorcode.MissingPublicKey)
-			return nil
-		} else {
-			c.natType = stun.TypeUnknown
-			c.noisePublicKey = [32]byte(gp.Payload[:32])
-		}
-	} else {
-		c.natType = gp.Payload[0]
-		c.noisePublicKey = [32]byte(gp.Payload[1:33])
-		log.Printf("新客户端接入 - Virtual Ip: %s, NAT Type: %d", c.virtualIp.String(), c.natType)
-	}
+	dSnapshot := h.dnsMap.Load().(*dnsSnapshot)
+	c.natType = gp.Payload[0]
+	c.noisePublicKey = [32]byte(gp.Payload[1:33])
+	c.hostname = util.UniqueHostName(string(gp.Payload[33:]), dSnapshot.dnsMap)
+	log.Printf("新客户端接入 - Virtual Ip: %s, NAT Type: %d, Host Name: %s", c.virtualIp.String(), c.natType, c.hostname)
+
 	c.hub.addClient(c)
+	c.hub.addDns(c.hostname, c.virtualIp)
 	// 回复握手确认
-	newGp := protocol.NewGamePacket([4]byte{}, util.IpToKey(c.virtualIp), protocol.TypeHandshake, nil)
+	newGp := protocol.NewGamePacket([4]byte{}, util.IpToKey(c.virtualIp), protocol.TypeHandshake, []byte(c.hostname))
 	select {
 	case c.controlChan <- newGp:
 	case <-ctx.Done():
@@ -231,18 +223,9 @@ func (h *Hub) serverWS(ctx context.Context, w http.ResponseWriter, r *http.Reque
 		// 回收 IP 和清理状态
 		h.releaseIp(client.virtualIp)
 		h.removeClient(client)
+		h.removeDns(client.hostname)
 
 		h.tm.RemoveA(util.IpToKey(client.virtualIp))
 		return
 	}
-}
-
-// updateAddrCheck 检测并更新客户端的公网 UDP 数据地址
-func (c *Client) updateAddrCheck(addr netip.AddrPort) {
-	oldAddr, _ := c.dataAddr.Load().(netip.AddrPort)
-	if oldAddr == addr {
-		return
-	}
-	log.Printf("客户端地址更新: %s, 之前: %v, 现在: %v\n", c.virtualIp.String(), oldAddr, addr)
-	c.dataAddr.Store(addr)
 }

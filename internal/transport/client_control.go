@@ -43,7 +43,7 @@ func (t *ClientTransport) connectServer() error {
 // handshake 与服务端执行初始握手，交换 NAT 类型和 Noise 公钥，并获取分配的虚拟 IP
 func (t *ClientTransport) handshake() (*protocol.GamePacket, error) {
 	payload := append([]byte{t.natType}, t.noiseMgr.GetPublicKey()...)
-	payload = append(payload, []byte(t.device.Name())...)
+	payload = append(payload, []byte(config.DeviceName)...)
 	handshakePacket := protocol.NewGamePacket([4]byte{}, [4]byte{}, protocol.TypeHandshake, payload)
 	data := handshakePacket.EncodePacket(t.bufPool, true, false, nil)
 	err := t.controlConn.WriteMessage(websocket.BinaryMessage, data)
@@ -51,7 +51,7 @@ func (t *ClientTransport) handshake() (*protocol.GamePacket, error) {
 	if err != nil {
 		return nil, err
 	}
-	t.controlConn.SetReadDeadline(time.Now().Add(time.Second * config.ReadTimeout))
+	t.controlConn.SetReadDeadline(time.Now().Add(config.ReadTimeout))
 	_, content, err := t.controlConn.ReadMessage()
 	if err != nil {
 		return nil, err
@@ -65,7 +65,7 @@ func (t *ClientTransport) handshake() (*protocol.GamePacket, error) {
 
 // heartbeat 定时发送 WebSocket 和 UDP 层的心跳包，保持连接活跃
 func (t *ClientTransport) heartbeat(ctx context.Context) error {
-	timer := time.NewTicker(time.Second * config.PingTime)
+	timer := time.NewTicker(config.PingTime)
 	defer timer.Stop()
 	wsHeartbeatPacket := protocol.NewGamePacket([4]byte(t.localIp.To4()), [4]byte{}, protocol.TypePing, nil)
 	udpHeartbeatPacket := protocol.NewGamePacket([4]byte(t.localIp.To4()), [4]byte{}, protocol.TypePing, nil)
@@ -94,9 +94,9 @@ func (t *ClientTransport) controlRecv(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		default:
-			t.controlConn.SetReadDeadline(time.Now().Add(time.Second * config.ReadTimeout))
+			t.controlConn.SetReadDeadline(time.Now().Add(config.ReadTimeout))
 			t.controlConn.SetPongHandler(func(string) error {
-				t.controlConn.SetReadDeadline(time.Now().Add(time.Second * config.ReadTimeout))
+				t.controlConn.SetReadDeadline(time.Now().Add(config.ReadTimeout))
 				return nil
 			})
 			msgType, reader, err := t.controlConn.NextReader()

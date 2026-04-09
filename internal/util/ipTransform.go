@@ -17,16 +17,7 @@ func IpToKey(ip net.IP) [4]byte {
 	}
 }
 
-// UDPAddrToBytes 将 UDPAddr 转换为 7 字节 (4 字节 IP + 2 字节端口 + 1 字节 NAT 类型)
-func UDPAddrToBytes(addr *net.UDPAddr, natType uint8) []byte {
-	buf := make([]byte, 7)
-	copy(buf[0:4], addr.IP.To4())
-	binary.BigEndian.PutUint16(buf[4:6], uint16(addr.Port))
-	buf[6] = natType
-	return buf
-}
-
-// UDPAddrPortToBytes 将 netip.AddrPort 转换为 7 字节 (优化版)
+// UDPAddrPortToBytes 将 netip.AddrPort 转换为字节
 func UDPAddrPortToBytes(addr netip.AddrPort, natType uint8) []byte {
 	buf := make([]byte, 7)
 	ip := addr.Addr().As4()
@@ -39,7 +30,7 @@ func UDPAddrPortToBytes(addr netip.AddrPort, natType uint8) []byte {
 // BytesToIP 将 6 字节数据解析回 UDPAddr (用于客户端)
 func BytesToIP(buf []byte) *net.UDPAddr {
 	return &net.UDPAddr{
-		IP:   net.IP(buf[0:4]),
+		IP:   buf[0:4],
 		Port: int(binary.BigEndian.Uint16(buf[4:6])),
 	}
 }

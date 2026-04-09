@@ -13,4 +13,6 @@ var (
 	PacketTooShort = errors.New("packet too short")
 	// MissingPublicKey 缺少公钥
 	MissingPublicKey = errors.New("missing public key")
+	// ParseDNSError 解析 DNS 字符串失败
+	ParseDNSError = errors.New("failed to parse DNS")
 )

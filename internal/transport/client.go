@@ -141,6 +141,8 @@ func (t *ClientTransport) ListenAndServe(ctx context.Context, testFlag bool, tes
 				if err == nil {
 					t.natType = natType
 				}
+			} else {
+				t.natType = stun.TypeUnknown
 			}
 
 			atomic.StoreUint32(t.status, ui.CONNECT) // 状态：连接服务器
@@ -175,7 +177,7 @@ func (t *ClientTransport) ListenAndServe(ctx context.Context, testFlag bool, tes
 				if t.device != nil {
 					t.device.Close()
 				}
-				t.device = tun.NewTun(config.DeviceName, ".et", t.localIp, t.FromTun, t.FromNet, t.bufPool)
+				t.device = tun.NewTun(string(handshake.Payload), ".et", t.localIp, t.FromTun, t.FromNet, t.bufPool)
 				// 启动 TUN 协程
 				go t.device.Start(pCtx, protocol.HeaderLength)
 			}

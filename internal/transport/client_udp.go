@@ -8,6 +8,7 @@ import (
 	"easytun/internal/protocol"
 	"easytun/internal/stun"
 	"easytun/internal/util"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"log"
@@ -21,6 +22,7 @@ func (t *ClientTransport) packetSend(ctx context.Context) error {
 	batchSize := 32
 	payloadBatch := make([][]byte, 0, batchSize)
 	var err error
+	dnsBuffer := make([]byte, 0, 64)
 	gp := &protocol.GamePacket{}
 	for {
 		select {
@@ -46,7 +48,13 @@ func (t *ClientTransport) packetSend(ctx context.Context) error {
 				dstIp := [4]byte(p[16:20])
 				var data []byte
 				if dstIp[3] == 1 && len(p) > 28 {
-					gp.Reset([4]byte(t.localIp.To4()), dstIp, protocol.TypeDnsRequest, p[28:])
+					dnsBuffer = dnsBuffer[:0]
+					ihl := int(p[0]&0x0F) * 4
+					udpHeader := p[ihl:]
+					srcPort := binary.BigEndian.Uint16(udpHeader[0:2])
+					dnsBuffer = binary.BigEndian.AppendUint16(dnsBuffer, srcPort)
+					dnsBuffer = append(dnsBuffer, p[ihl+8:]...)
+					gp.Reset([4]byte(t.localIp.To4()), dstIp, protocol.TypeDnsRequest, dnsBuffer)
 					data = gp.EncodePacket(t.bufPool, false, false, nil)
 				} else if dstIp[3] != 255 {
 					session, ok := t.noiseMgr.GetSession(dstIp)
@@ -107,7 +115,7 @@ func (t *ClientTransport) packetRecv(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		default:
-			t.dataConn.SetReadDeadline(time.Now().Add(time.Second * config.ReadTimeout))
+			t.dataConn.SetReadDeadline(time.Now().Add(config.ReadTimeout))
 			cnt, addr, err := t.dataConn.ReadFromUDP(buffer)
 			if err != nil {
 				var netErr *net.OpError
@@ -191,6 +199,16 @@ func (t *ClientTransport) packetRecv(ctx context.Context) error {
 						return nil
 					default:
 						continue
+					}
+				case protocol.TypeDnsResponse:
+					// TODO 解析并构造dns响应包
+
+					select {
+					case t.FromNet <- gp.RawData:
+					case <-ctx.Done():
+						return nil
+					default:
+						t.bufPool.Put(gp.RawData[:0])
 					}
 				}
 			}

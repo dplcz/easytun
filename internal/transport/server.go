@@ -49,6 +49,7 @@ type Client struct {
 	packetChan chan *packet // 待发送给该客户端的数据包队列
 
 	virtualIp      net.IP   // 客户端的虚拟 IP 地址
+	hostname       string   // 客户端的虚拟 hostname
 	noisePublicKey [32]byte // 客户端的 Noise 协议公钥
 }
 
@@ -62,6 +63,10 @@ type transferPacket struct {
 type routerSnapshot struct {
 	clientMap   map[[4]byte]*Client // 虚拟 IP 到 Client 的映射
 	clientSlice []*Client           // 客户端列表切片，方便遍历
+}
+
+type dnsSnapshot struct {
+	dnsMap map[string]net.IP
 }
 
 // Hub 是服务端的核心管理器，处理路由、地址分配和数据中转
@@ -78,6 +83,9 @@ type Hub struct {
 	router atomic.Value        // 存放 routerSnapshot
 	tm     *stun.TunnelManager // P2P 隧道管理器
 	mtx    sync.Mutex          // 路由表修改锁
+
+	dnsMap atomic.Value // 存放 dnsSnapshot
+	dnsMtx sync.Mutex   // dns 表修改锁
 
 	ipMtx   sync.Mutex // IP 分配锁
 	freeIps []uint8    // 空闲 IP 地址池 (Stack)
@@ -163,4 +171,14 @@ func (h *Hub) transfer(ctx context.Context) {
 			return
 		}
 	}
+}
+
+// updateAddrCheck 检测并更新客户端的公网 UDP 数据地址
+func (c *Client) updateAddrCheck(addr netip.AddrPort) {
+	oldAddr, _ := c.dataAddr.Load().(netip.AddrPort)
+	if oldAddr == addr {
+		return
+	}
+	log.Printf("客户端地址更新: %s, 之前: %v, 现在: %v\n", c.virtualIp.String(), oldAddr, addr)
+	c.dataAddr.Store(addr)
 }

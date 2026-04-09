@@ -46,7 +46,11 @@ func NewHub() *Hub {
 		clientMap:   make(map[[4]byte]*Client),
 		clientSlice: make([]*Client, 0),
 	}
+
+	dSnapshot := &dnsSnapshot{dnsMap: make(map[string]net.IP)}
+
 	h.router.Store(eSnapshot)
+	h.dnsMap.Store(dSnapshot)
 	return h
 }
 
