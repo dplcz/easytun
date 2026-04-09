@@ -125,6 +125,15 @@ func (h *Hub) registerDefaultWSHandlers() {
 
 // handleHandshake 处理客户端初始连接握手
 func (h *Hub) handleHandshake(ctx context.Context, c *Client, gp *protocol.GamePacket) error {
+	/*
+		TODO 实现DNS
+		BASE
+		1.hostname和ip的解析表
+		2.udp读取DNS请求并返回响应
+		FEAT
+		1.client本地缓存
+		2.client提前续期
+	*/
 	payloadLen := len(gp.Payload)
 	if payloadLen < 33 {
 		if payloadLen != 32 {

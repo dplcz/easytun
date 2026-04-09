@@ -63,7 +63,7 @@ func NewNoiseManager(tunChan chan []byte) *NoiseManager {
 	return noiseMgr
 }
 
-func (s *NoiseSession) updateLastSeen() {
+func (s *NoiseSession) UpdateLastSeen() {
 	atomic.StoreInt64(&s.lastSeen, time.Now().Unix())
 }
 
@@ -100,7 +100,6 @@ func (m *NoiseManager) GetSession(key [4]byte) (*NoiseSession, bool) {
 	if !ok {
 		return nil, false
 	}
-	session.updateLastSeen()
 	return session, true
 }
 
@@ -234,12 +233,12 @@ func (m *NoiseManager) sweepSessions(timeout int64) {
 
 func (m *NoiseManager) CheckSession(ctx context.Context) error {
 	// 建议 ticker 时间不要长于 timeout 时间，否则清理会延迟很久
-	ticker := time.NewTicker(time.Second * 10)
+	ticker := time.NewTicker(time.Second * 5)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
-			m.sweepSessions(30)
+			m.sweepSessions(10)
 		case <-ctx.Done():
 			return nil
 		}

@@ -64,6 +64,7 @@ func (t *ClientTransport) packetSend(ctx context.Context) error {
 						continue
 					}
 					gp.Reset([4]byte(t.localIp.To4()), dstIp, protocol.TypeData, p)
+					session.UpdateLastSeen()
 					data = gp.EncodePacket(t.bufPool, false, config.EnableCompress, session.Cipher.Sender)
 				} else {
 					gp.Reset([4]byte(t.localIp.To4()), dstIp, protocol.TypeData, p)
@@ -148,8 +149,9 @@ func (t *ClientTransport) packetRecv(ctx context.Context) error {
 						log.Println(err)
 						t.bufPool.Put(gp.RawData[:0])
 						continue
+					} else {
+						session.UpdateLastSeen()
 					}
-
 					select {
 					case t.FromNet <- gp.RawData:
 					case <-ctx.Done():

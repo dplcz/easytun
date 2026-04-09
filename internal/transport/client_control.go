@@ -43,6 +43,7 @@ func (t *ClientTransport) connectServer() error {
 // handshake 与服务端执行初始握手，交换 NAT 类型和 Noise 公钥，并获取分配的虚拟 IP
 func (t *ClientTransport) handshake() (*protocol.GamePacket, error) {
 	payload := append([]byte{t.natType}, t.noiseMgr.GetPublicKey()...)
+	payload = append(payload, []byte(t.device.Name())...)
 	handshakePacket := protocol.NewGamePacket([4]byte{}, [4]byte{}, protocol.TypeHandshake, payload)
 	data := handshakePacket.EncodePacket(t.bufPool, true, false, nil)
 	err := t.controlConn.WriteMessage(websocket.BinaryMessage, data)
