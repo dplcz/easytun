@@ -2,7 +2,10 @@
 
 package tun
 
-import "context"
+import (
+	"context"
+	"net"
+)
 
 type Device interface {
 	//// Read 返回一个干净的 IP 数据包 (已经过滤过垃圾包的)
@@ -13,9 +16,12 @@ type Device interface {
 
 	// Name 返回网卡名
 	Name() string
+	Dns() net.IP
 
 	LUID() uint64
 
 	Close() error
 	Start(ctx context.Context, headerLength int)
+
+	SendDNS([]byte) error
 }

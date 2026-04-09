@@ -18,6 +18,7 @@ import (
 type Tun struct {
 	DeviceName string
 	Ip         net.IP
+	DnsIp      net.IP
 	Subnet     *net.IPNet
 
 	domain string
@@ -31,7 +32,7 @@ type Tun struct {
 }
 
 func setupDnsNrpt(domain string, dnsServer string) {
-	clearCmd := fmt.Sprintf("Get-DnsClientNrptRule | Where-Object {$_.Namespace -eq '%s'} | Remove-DnsClientNrptRule -ErrorAction SilentlyContinue", domain)
+	clearCmd := fmt.Sprintf("Get-DnsClientNrptRule | Where-Object {$_.Namespace -eq '%s'} | Remove-DnsClientNrptRule -ErrorAction SilentlyContinue -Force", domain)
 	exec.Command("powershell", "-Command", clearCmd).Run()
 
 	addCmd := fmt.Sprintf("Add-DnsClientNrptRule -Namespace '%s' -NameServers '%s'", domain, dnsServer)
@@ -82,6 +83,7 @@ func NewTun(name, domain string, ipByte []byte, toNet, fromNet chan []byte, bufP
 
 	return &Tun{
 		Ip:         ip,
+		DnsIp:      dnsIp,
 		Subnet:     subnet,
 		DeviceName: name,
 		domain:     domain,
@@ -111,9 +113,13 @@ func (t *Tun) Start(ctx context.Context, headerLength int) {
 	wg.Wait()
 }
 
+func (t *Tun) Dns() net.IP {
+	return t.DnsIp
+}
+
 // Stop
 func (t *Tun) Close() error {
-	clearCmd := fmt.Sprintf("Get-DnsClientNrptRule | Where-Object {$_.Namespace -eq '%s'} | Remove-DnsClientNrptRule -ErrorAction SilentlyContinue", t.domain)
+	clearCmd := fmt.Sprintf("Get-DnsClientNrptRule | Where-Object {$_.Namespace -eq '%s'} | Remove-DnsClientNrptRule -ErrorAction SilentlyContinue -Force", t.domain)
 	exec.Command("powershell", "-Command", clearCmd).Run()
 
 	t.session.End()
@@ -126,6 +132,18 @@ func (t *Tun) LUID() uint64 {
 }
 func (t *Tun) Name() string {
 	return t.DeviceName
+}
+
+func (t *Tun) SendDNS(resp []byte) error {
+	packetBuffer, err := t.session.AllocateSendPacket(len(resp))
+	if err == nil {
+		copy(packetBuffer, resp)
+		t.session.SendPacket(packetBuffer)
+	} else {
+		log.Printf("Wintun Allocate 失败: %v", err)
+		return err
+	}
+	return nil
 }
 
 // tunRecv 从tun接收数据

@@ -47,9 +47,15 @@ func (t *ClientTransport) packetSend(ctx context.Context) error {
 			for _, p := range payloadBatch {
 				dstIp := [4]byte(p[16:20])
 				var data []byte
-				if dstIp[3] == 1 && len(p) > 28 {
+				ihl := int(p[0]&0x0F) * 4
+				isDNS := false
+				if len(p) >= ihl+8 && ihl >= 20 && p[0]>>4 == 4 && p[9] == 17 && dstIp == util.IpToKey(t.device.Dns()) {
+					udpHeader := p[ihl:]
+					dstPort := binary.BigEndian.Uint16(udpHeader[2:4])
+					isDNS = dstPort == 53
+				}
+				if isDNS {
 					dnsBuffer = dnsBuffer[:0]
-					ihl := int(p[0]&0x0F) * 4
 					udpHeader := p[ihl:]
 					srcPort := binary.BigEndian.Uint16(udpHeader[0:2])
 					dnsBuffer = binary.BigEndian.AppendUint16(dnsBuffer, srcPort)
@@ -201,15 +207,16 @@ func (t *ClientTransport) packetRecv(ctx context.Context) error {
 						continue
 					}
 				case protocol.TypeDnsResponse:
-					// TODO 解析并构造dns响应包
-
-					select {
-					case t.FromNet <- gp.RawData:
-					case <-ctx.Done():
-						return nil
-					default:
+					dnsBuf, err := util.BuildDNSResponse(gp.Payload, t.localIp, t.device.Dns())
+					if err != nil {
+						log.Println(err)
 						t.bufPool.Put(gp.RawData[:0])
 					}
+					err = t.device.SendDNS(dnsBuf)
+					if err != nil {
+						log.Println(err)
+					}
+					t.bufPool.Put(gp.RawData[:0])
 				}
 			}
 		}

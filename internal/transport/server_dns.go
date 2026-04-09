@@ -63,9 +63,9 @@ func (h *Hub) buildDnsResponse(r []byte) ([]byte, error) {
 	hostname := msg.Question[0].Header().Name
 	log.Println(hostname)
 	dnsRes := h.getDns(hostname)
+	msgResp.Authoritative = true
 	if dnsRes == nil {
 		msgResp.Rcode = dns.RcodeNameError
-		msgResp.Authoritative = true
 		err := msgResp.Pack()
 		if err != nil {
 			return nil, err
