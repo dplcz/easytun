@@ -19,8 +19,10 @@
 
 *   **便捷组网**：
     *   **自动化分配**：客户端接入后自动分配虚拟 IP，支持单播、广播及组播全流量转发。
+    *   **内置 DNS**：内建 DNS 服务，支持 `.et` 后缀的主机名自动解析。
+    *   **状态持久化**：使用唯一 `ClientID`（存储在 `.client_id` 中）维持会话连续性。
     *   **开箱即用**：客户端内嵌 Wintun DLL 与默认配置，支持编译时嵌入或外部文件加载。
-    *   **智能重连**：内置指数退避重连机制，UI 实时展示 `Reconnecting` 状态。
+    *   **智能重连**：内置指数退避重连机制。
 *   **高性能架构**：
     *   **无锁设计**：服务端采用原子快照与通道流水线，实现双层无锁路由转发。
     *   **资源优化**：利用 `net/netip` 地址管理、`sync.Pool` 内存复用及批量 I/O，显著降低延迟与开销。
@@ -30,7 +32,7 @@
     *   **金融级加密**：基于 Noise IK 协议建立会话，数据面采用 ChaCha20-Poly1305 全量加密与鉴别。
     *   **智能穿透**：内置实验性 P2P 打洞（支持锥形与对称 NAT 预测），实现转发与直连无感切换。
 *   **可观测性**：
-    *   **实时监控**：可选终端 UI 面板，动态展示连接状态、虚拟 IP、实时吞吐量（Bytes）及系统负载。
+    *   **实时监控**：可选终端 UI 面板，动态展示连接状态、虚拟 IP、主机名、实时吞吐量（Bytes）及系统负载。
     *   **深度诊断**：服务端内置 pprof 性能分析接口，方便排查性能瓶颈。
 
 ## 🧱 项目结构
@@ -60,9 +62,9 @@
 ## 🔁 工作原理（简述）
 
 1. 客户端启动后连接服务端 WebSocket 并握手。
-2. 服务端为客户端分配虚拟 IP（`10.0.6.x`）。
+2. 服务端为客户端分配虚拟 IP（`10.0.6.x`）以及唯一的主机名（如 `user-pc.et`）。
 3. 客户端从 Wintun 网卡读取 IP 包，封装为 EasyTun 协议后通过 UDP 发送。
-4. 服务端根据目标 IP 路由并转发给对应客户端。
+4. 服务端根据目标 IP 路由，或通过内置 DNS 解析主机名并转发给对应客户端。
 5. 若双方在线，服务端会协同进行 P2P 打洞，建立后可走直连。
 6. 接收方客户端解包后写回本地 Wintun 网卡。
 
@@ -92,26 +94,42 @@
 
 ### 1) 客户端配置
 
-模板文件：`assets/config/config.json.example`
+模板文件：`assets/config/config.toml.example`
 
-请复制并创建：`assets/config/config.json`
+请复制并创建：`assets/config/config.toml`
 
 示例：
 
-```json
-{
-  "server_ip": "你的服务器公网IP",
-  "server_port": 10011,
-  "check_port": 10012,
-  "device_name": "EasyTun",
-  "read_timeout": 10,
-  "ping_time": 1,
-  "send_workers": 4,
-  "recv_workers": 4,
-  "enable_p2p": false,
-  "enable_ui": true,
-  "enable_compress": true
-}
+```toml
+[server]
+# 服务端公网 IP 地址
+server_ip = "你的服务器公网IP"
+# 服务端控制面/数据面端口 (TCP+UDP 同端口)
+server_port = 10011
+# P2P 检测 UDP 端口 (服务端监听该端口)
+check_port = 10012
+
+[device]
+# Wintun 网卡名称
+device_name = "EasyTun"
+
+[performance]
+# 读超时时间 (支持单位: ms, s, m, h)
+read_timeout = "10s"
+# 心跳包发送间隔 (支持单位: ms, s, m, h)
+ping_time = "1s"
+# 客户端发包协程数 (工作池大小)
+send_workers = 4
+# 客户端收包协程数 (工作池大小)
+recv_workers = 4
+
+[features]
+# 是否启用 P2P 打洞 (实验性功能)
+enable_p2p = false
+# 是否启用终端 UI 监控面板
+enable_ui = true
+# 是否启用 LZ4 数据压缩
+enable_compress = true
 ```
 
 字段说明：
@@ -120,8 +138,8 @@
 - `server_port`：服务端控制面/数据面端口（TCP+UDP 同端口）。
 - `check_port`：P2P 检测 UDP 端口（服务端监听该端口）。
 - `device_name`：Wintun 网卡名。
-- `read_timeout`：读超时（秒）。
-- `ping_time`：心跳间隔（秒）。
+- `read_timeout`：读超时。
+- `ping_time`：心跳间隔。
 - `send_workers`：客户端发包协程数。
 - `recv_workers`：客户端收包协程数。
 - `enable_p2p`：是否启用 P2P 打洞。
@@ -130,30 +148,41 @@
 
 ### 2) 服务端配置
 
-模板文件：`assets/config/server_config.json.example`
+模板文件：`assets/config/server_config.toml.example`
 
-请复制并创建：`assets/config/server_config.json`
+请复制并创建：`assets/config/server_config.toml`
 
 示例：
 
-```json
-{
-  "server_ip": "",
-  "server_port": 10011,
-  "check_port": 10012,
-  "device_name": "default",
-  "read_timeout": 10,
-  "ping_time": 1
-}
+```toml
+[server]
+# 服务端监听的公网 IP (默认为空表示监听所有网卡)
+server_ip = ""
+# 服务端控制面/数据面监听端口 (需同时放行 TCP 和 UDP)
+server_port = 10011
+# P2P 检测 UDP 监听端口
+check_port = 10012
+
+[device]
+# 默认设备标识
+device_name = "default"
+# 断连后保留客户端状态的时长
+retention_time = "5m"
+
+[performance]
+# 服务端读超时时间
+read_timeout = "10s"
+# 服务端内部检测间隔
+ping_time = "1s"
 ```
 
-说明：服务端主要使用 `server_port`、`check_port`、`read_timeout` 等参数。
+说明：服务端主要使用 `server_port`、`check_port`、`read_timeout` 以及 `retention_time` 等参数。
 
 ## 📌 重要说明：配置是“编译时嵌入”
 
 本项目使用 `go:embed` 将配置文件打进二进制。  
-修改 `assets/config/*.json` 后，需要重新编译，运行中的二进制不会自动读取磁盘新配置。  
-客户端可以通过启动参数加载本地配置文件
+修改 `assets/config/*.toml` 后，需要重新编译，运行中的二进制不会自动读取磁盘新配置。  
+客户端可以通过启动参数加载本地配置文件。
 
 ## 🚀 快速开始
 
@@ -169,7 +198,7 @@ go build -tags server -o dist/server ./cmd/server
 - WebSocket 监听：`/ws`，端口为 `server_port`
 - UDP 监听：端口为 `server_port`
 - UDP check 监听：端口为 `check_port`
-- pprof：`10021`（HTTP）
+- pprof：端口为 `10021`（HTTP）
 
 ### 2) 启动客户端（Windows）
 
@@ -181,7 +210,7 @@ go build -tags client -o dist/easytun.exe ./cmd/client
 客户端参数：
 
 - `-t`：测试模式（周期性发送广播包）。
-- `-i`：测试模式广播间隔（毫秒，默认 `10`）。
+- `-i`：测试模式广播间隔（毫秒，默认 `1000`）。
 - `-c`：使用外部配置文件（配置文件路径，默认使用嵌入配置）。
 
 ## 🛠️ 构建方式
@@ -265,7 +294,7 @@ docker run -d --name easytun-server \
 ## 🩺 故障排查
 
 - 编译报错 `pattern config/...: no matching files found`：
-    - 说明缺少 `assets/config/config.json` 或 `assets/config/server_config.json`。
+    - 说明缺少 `assets/config/config.toml` 或 `assets/config/server_config.toml`。
     - 请从 `.example` 复制生成正式文件后重新编译。
 - 客户端无法创建网卡或设置 IP：
     - 请以管理员权限运行客户端。
@@ -293,6 +322,8 @@ docker run -d --name easytun-server \
 - [ ] 优化服务端广播转发，改为广播转单播发送路径。
 - [ ] 支持 Linux 客户端 TUN/TAP 实现。
 - [x] 完善配置热更新或外部配置加载能力（替代纯嵌入配置）。
+- [x] 增加内置 DNS 支持与 `.et` 域名解析。
+- [x] 实现基于 `ClientID` 的客户端持久化与服务端状态保留。
 - [x] 增加可观测性指标（连接数、吞吐、丢包、转发延迟）——部分实现。
 - [ ] 补充 CI 流水线（构建、测试、发布制品）。
 

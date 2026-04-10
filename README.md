@@ -19,8 +19,10 @@ English | [中文](README_zh.md)
 
 *   **Seamless Networking**:
     *   **Auto-Assignment**: Automatically assigns virtual IPs upon connection; supports unicast, broadcast, and multicast forwarding.
+    *   **Internal DNS**: Built-in DNS server providing automatic hostname resolution within the `.et` domain.
+    *   **Stateful Persistence**: Uses a unique `ClientID` (stored in `.client_id`) to maintain session continuity.
     *   **Out-of-the-Box**: Client embeds Wintun DLL and default config; supports both build-time embedding and external config loading.
-    *   **Smart Reconnect**: Built-in exponential backoff reconnection with real-time `Reconnecting` status display in UI.
+    *   **Smart Reconnect**: Built-in exponential backoff reconnection.
 *   **High-Performance Architecture**:
     *   **Lock-Free Design**: Dual-layer lock-free routing and forwarding using atomic snapshots and channel pipelines.
     *   **Resource Optimized**: Leverages `net/netip` for address management, `sync.Pool` for memory reuse, and batch I/O to minimize latency and overhead.
@@ -30,7 +32,7 @@ English | [中文](README_zh.md)
     *   **Hardened Security**: Session establishment via Noise IK protocol; data plane fully encrypted and authenticated using ChaCha20-Poly1305.
     *   **Intelligent Traversal**: Experimental P2P hole punching (cone + symmetric NAT prediction) with seamless transition between relay and direct modes.
 *   **Observability**:
-    *   **Real-time Monitoring**: Optional terminal UI panel showing connection status, virtual IP, real-time throughput (Bytes), and system load.
+    *   **Real-time Monitoring**: Optional terminal UI panel showing connection status, virtual IP, hostname, real-time throughput (Bytes), and system load.
     *   **Deep Diagnostics**: Built-in pprof endpoint on the server for performance profiling and bottleneck identification.
 
 ## 🧱 Project Structure
@@ -60,9 +62,9 @@ English | [中文](README_zh.md)
 ## 🔁 How It Works (Overview)
 
 1. The client starts and connects to the server via WebSocket for handshake.
-2. The server assigns a virtual IP (`10.0.6.x`) to the client.
+2. The server assigns a virtual IP (`10.0.6.x`) and a unique hostname (e.g., `user-pc.et`) to the client.
 3. The client reads IP packets from the Wintun interface, encapsulates them into EasyTun packets, then sends them over UDP.
-4. The server routes and forwards packets based on destination IP.
+4. The server routes and forwards packets based on destination IP or resolves hostnames via internal DNS.
 5. If both peers are online, the server can coordinate P2P hole punching; once established, data can flow peer-to-peer.
 6. The receiving client decapsulates and writes packets back to its local Wintun interface.
 
@@ -91,68 +93,95 @@ Compression & Encryption notes:
 
 ### 1) Client Config
 
-Template: `assets/config/config.json.example`
+Template: `assets/config/config.toml.example`
 
-Create: `assets/config/config.json`
+Create: `assets/config/config.toml`
 
 Example:
 
-```json
-{
-  "server_ip": "your-public-server-ip",
-  "server_port": 10011,
-  "check_port": 10012,
-  "device_name": "EasyTun",
-  "read_timeout": 10,
-  "ping_time": 1,
-  "send_workers": 4,
-  "recv_workers": 4,
-  "enable_p2p": false,
-  "enable_ui": true,
-  "enable_compress": true
-}
+```toml
+[server]
+# server address
+server_ip = "your-public-server-ip"
+# control/data port on server (TCP+UDP, same port)
+server_port = 10011
+# UDP check port for P2P (server listens on this port)
+check_port = 10012
+
+[device]
+# Wintun adapter name
+device_name = "EasyTun"
+
+[performance]
+# read timeout (supports unit: ms, s, m, h)
+read_timeout = "10s"
+# heartbeat interval (supports unit: ms, s, m, h)
+ping_time = "1s"
+# number of client send workers
+send_workers = 4
+# number of client receive workers
+recv_workers = 4
+
+[features]
+# enable experimental P2P NAT traversal
+enable_p2p = false
+# enable the terminal monitoring panel
+enable_ui = true
+# enable LZ4 data compression
+enable_compress = true
 ```
 
 Fields:
 
 - `server_ip`: server address.
-- `server_port`: control/data port on server (TCP+UDP, same port).
-- `check_port`: UDP check port for P2P (server listens on this port).
+- `server_port`: control/data port on server.
+- `check_port`: UDP check port for P2P.
 - `device_name`: Wintun adapter name.
-- `read_timeout`: read timeout (seconds).
-- `ping_time`: heartbeat interval (seconds).
+- `read_timeout`: read timeout.
+- `ping_time`: heartbeat interval.
 - `send_workers`: number of client send workers.
 - `recv_workers`: number of client receive workers.
-- `key`: shared key for UDP encryption (32 bytes).
 - `enable_p2p`: enable experimental P2P NAT traversal.
 - `enable_ui`: enable the terminal monitoring panel.
 - `enable_compress`: enable LZ4 data compression.
 
 ### 2) Server Config
 
-Template: `assets/config/server_config.json.example`
+Template: `assets/config/server_config.toml.example`
 
-Create: `assets/config/server_config.json`
+Create: `assets/config/server_config.toml`
 
 Example:
 
-```json
-{
-  "server_ip": "",
-  "server_port": 10011,
-  "check_port": 10012,
-  "device_name": "default",
-  "read_timeout": 10,
-  "ping_time": 1
-}
+```toml
+[server]
+# server listen address
+server_ip = ""
+# control/data port on server
+server_port = 10011
+# UDP check port for P2P
+check_port = 10012
+
+[device]
+# default device name
+device_name = "default"
+# duration to retain client state after disconnection
+retention_time = "5m"
+
+[performance]
+# server read timeout
+read_timeout = "10s"
+# internal check interval
+ping_time = "1s"
 ```
 
-Note: server mainly uses `server_port`, `check_port`, and `read_timeout`.
+Note: server mainly uses `server_port`, `check_port`, `read_timeout`, and `retention_time`.
 
 ## 📌 Important: Config Is Embedded at Build Time
 
 This project uses `go:embed` to bake config files into the binary.  
-After changing `assets/config/*.json`, you must rebuild. Running binaries will not reload updated files from disk.
+After changing `assets/config/*.toml`, you must rebuild. Running binaries will not reload updated files from disk.
+The client can load a local configuration file through startup parameters.
 
 ## 🚀 Quick Start
 
@@ -168,7 +197,7 @@ Default server behavior:
 - WebSocket endpoint: `/ws`, port = `server_port`
 - UDP listener: port = `server_port`
 - UDP check listener: port = `check_port`
-- pprof: `10021` (HTTP)
+- pprof: port = `10021` (HTTP)
 
 ### 2) Start Client (Windows)
 
@@ -180,7 +209,7 @@ go build -tags client -o dist/easytun.exe ./cmd/client
 Client flags:
 
 - `-t`: test mode (periodically sends broadcast packets).
-- `-i`: broadcast interval in test mode (seconds, default `5`).
+- `-i`: broadcast interval in test mode (milliseconds, default `1000`).
 - `-c`: Use external configuration file (configuration file path, default embedded configuration).
 
 ## 🛠️ Build
@@ -264,7 +293,7 @@ docker run -d --name easytun-server \
 ## 🩺 Troubleshooting
 
 - Build error `pattern config/...: no matching files found`:
-  - Missing `assets/config/config.json` or `assets/config/server_config.json`.
+  - Missing `assets/config/config.toml` or `assets/config/server_config.toml`.
   - Copy from `.example` and rebuild.
 - Client cannot create adapter or set IP:
   - Run client with Administrator privilege.
@@ -292,7 +321,9 @@ docker run -d --name easytun-server \
 - [ ] Optimize server-side broadcast forwarding with broadcast-to-unicast conversion.
 - [ ] Add Linux client support (TUN/TAP).
 - [x] Support config hot reload or external config loading (instead of embed-only mode).
-- [ ] Add observability metrics (connections, throughput, packet loss, forwarding latency).
+- [x] Add Internal DNS support with `.et` domain resolution.
+- [x] Implement client persistence with `ClientID` and server-side state retention.
+- [x] Add observability metrics (connections, throughput, packet loss, forwarding latency).
 - [ ] Add CI pipeline (build, test, artifact release).
 
 ## 📄 License
