@@ -15,6 +15,7 @@ import (
 	"net/netip"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"golang.org/x/net/ipv4"
 
@@ -51,6 +52,7 @@ type Client struct {
 	virtualIp      net.IP   // 客户端的虚拟 IP 地址
 	hostname       string   // 客户端的虚拟 hostname
 	noisePublicKey [32]byte // 客户端的 Noise 协议公钥
+	clientID       [16]byte // 客户端持久化唯一 ID
 }
 
 // transferPacket 代表从中转队列接收到的待处理数据包
@@ -67,6 +69,13 @@ type routerSnapshot struct {
 
 type dnsSnapshot struct {
 	dnsMap map[string]net.IP
+}
+
+// offlineClient 代表处于保留期内的离线客户端信息
+type offlineClient struct {
+	virtualIp net.IP
+	hostname  string
+	expiry    time.Time
 }
 
 // Hub 是服务端的核心管理器，处理路由、地址分配和数据中转
@@ -90,6 +99,9 @@ type Hub struct {
 	ipMtx   sync.Mutex // IP 分配锁
 	freeIps []uint8    // 空闲 IP 地址池 (Stack)
 
+	retentionMap map[[16]byte]*offlineClient // 处于保留期的离线客户端 ID -> 信息
+	retentionMtx sync.Mutex                  // 保留期映射表锁
+
 	Subnet     *net.IPNet // 虚拟网段信息
 	bufPool    *sync.Pool // 字节缓冲区对象池
 	tpPool     *sync.Pool // transferPacket 对象池
@@ -108,6 +120,7 @@ func (h *Hub) Run(ctx context.Context) {
 		h.serverWS(ctx, w, r)
 	})
 	go h.listenUdp(ctx)
+	go h.cleanRetention(ctx)
 	log.Printf("开始监听WS... 端口:%d", config.ServerPort)
 	err := http.ListenAndServe(fmt.Sprintf(":%d", config.ServerPort), nil)
 	if err != nil {

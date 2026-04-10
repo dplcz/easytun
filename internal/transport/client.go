@@ -177,7 +177,9 @@ func (t *ClientTransport) ListenAndServe(ctx context.Context, testFlag bool, tes
 				if t.device != nil {
 					t.device.Close()
 				}
-				t.device = tun.NewTun(string(handshake.Payload), ".et", t.localIp, t.FromTun, t.FromNet, t.bufPool)
+				hostname := string(handshake.Payload)
+				t.device = tun.NewTun(hostname, ".et", t.localIp, t.FromTun, t.FromNet, t.bufPool)
+				t.board.InitHostName(hostname + ".et")
 				// 启动 TUN 协程
 				go t.device.Start(pCtx, protocol.HeaderLength)
 			}
@@ -210,6 +212,7 @@ func (t *ClientTransport) ListenAndServe(ctx context.Context, testFlag bool, tes
 			// 监听 Context 取消信号，主动关闭连接以打断阻塞读取
 			sessionGroup.Go(func() error {
 				<-sCtx.Done()
+				time.Sleep(time.Second)
 				t.dataConn.Close()
 				t.controlConn.Close()
 				return nil

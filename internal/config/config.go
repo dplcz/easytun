@@ -12,7 +12,9 @@ import (
 var ServerIp string
 var ServerPort int
 var DeviceName string
+var ClientID [16]byte
 var ReadTimeout time.Duration
+var RetentionTime time.Duration
 var PingTime time.Duration
 var SendWorkers int
 var RecvWorkers int
@@ -29,9 +31,10 @@ type Configuration struct {
 }
 
 type ServerConfig struct {
-	ServerIp   string `toml:"server_ip"`
-	ServerPort int    `toml:"server_port"`
-	CheckPort  int    `toml:"check_port"`
+	ServerIp      string `toml:"server_ip"`
+	ServerPort    int    `toml:"server_port"`
+	CheckPort     int    `toml:"check_port"`
+	RetentionTime string `toml:"retention_time"`
 }
 
 type DeviceConfig struct {
@@ -81,6 +84,11 @@ func InitConfig(localPath string) {
 	ServerIp = conf.Server.ServerIp
 	ServerPort = conf.Server.ServerPort
 	CheckPort = conf.Server.CheckPort
+	RetentionTime, err = time.ParseDuration(conf.Server.RetentionTime)
+	if err != nil {
+		//log.Printf("failed to parse retention_time: %v, use default 5m\n", err)
+		RetentionTime = 5 * time.Minute
+	}
 	DeviceName = conf.Device.DeviceName
 	if len(DeviceName) > 10 || len(DeviceName) < 1 {
 		panic("Device name must be between 1 and 10")
@@ -110,4 +118,16 @@ func InitConfig(localPath string) {
 	EnableP2P = conf.Features.EnableP2P
 	EnableUi = conf.Features.EnableUi
 	EnableCompress = conf.Features.EnableCompress
+
+	// 持久化 ClientID 逻辑
+	cidPath := ".client_id"
+	if fileData, err := os.ReadFile(cidPath); err == nil && len(fileData) == 16 {
+		copy(ClientID[:], fileData)
+	} else {
+		// 生成新的随机 ClientID
+		for i := 0; i < 16; i++ {
+			ClientID[i] = uint8(time.Now().UnixNano() % 256)
+		}
+		_ = os.WriteFile(cidPath, ClientID[:], 0644)
+	}
 }

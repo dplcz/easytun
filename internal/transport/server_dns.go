@@ -6,6 +6,7 @@ import (
 	"easytun/internal/errorcode"
 	"log"
 	"net"
+	"strings"
 
 	"codeberg.org/miekg/dns"
 	"codeberg.org/miekg/dns/dnsutil"
@@ -14,7 +15,6 @@ import (
 func (h *Hub) addDns(hostname string, ip net.IP) {
 	h.dnsMtx.Lock()
 	defer h.dnsMtx.Unlock()
-	hostname = hostname + ".et."
 	oldSnapshot := h.dnsMap.Load().(*dnsSnapshot)
 	newSnapshot := &dnsSnapshot{
 		dnsMap: make(map[string]net.IP),
@@ -29,7 +29,6 @@ func (h *Hub) addDns(hostname string, ip net.IP) {
 func (h *Hub) removeDns(hostname string) {
 	h.dnsMtx.Lock()
 	defer h.dnsMtx.Unlock()
-	hostname = hostname + ".et."
 	oldSnapshot := h.dnsMap.Load().(*dnsSnapshot)
 	newSnapshot := &dnsSnapshot{
 		dnsMap: make(map[string]net.IP),
@@ -43,9 +42,10 @@ func (h *Hub) removeDns(hostname string) {
 	h.dnsMap.Store(newSnapshot)
 }
 
-func (h *Hub) getDns(hostname string) net.IP {
+func (h *Hub) getDns(hostname, domain string) net.IP {
 	snapshot := h.dnsMap.Load().(*dnsSnapshot)
 	log.Println(snapshot.dnsMap)
+	hostname = strings.Replace(hostname, domain+".", "", 1)
 	if ip, ok := snapshot.dnsMap[hostname]; ok {
 		return ip
 	}
@@ -62,7 +62,7 @@ func (h *Hub) buildDnsResponse(r []byte) ([]byte, error) {
 	dnsutil.SetReply(msgResp, msg)
 	hostname := msg.Question[0].Header().Name
 	log.Println(hostname)
-	dnsRes := h.getDns(hostname)
+	dnsRes := h.getDns(hostname, ".et")
 	msgResp.Authoritative = true
 	if dnsRes == nil {
 		msgResp.Rcode = dns.RcodeNameError

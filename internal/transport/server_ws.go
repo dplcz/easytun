@@ -136,8 +136,26 @@ func (h *Hub) handleHandshake(ctx context.Context, c *Client, gp *protocol.GameP
 	dSnapshot := h.dnsMap.Load().(*dnsSnapshot)
 	c.natType = gp.Payload[0]
 	c.noisePublicKey = [32]byte(gp.Payload[1:33])
-	c.hostname = util.UniqueHostName(string(gp.Payload[33:]), dSnapshot.dnsMap)
-	log.Printf("新客户端接入 - Virtual Ip: %s, NAT Type: %d, Host Name: %s", c.virtualIp.String(), c.natType, c.hostname)
+	c.clientID = [16]byte(gp.Payload[33:49])
+
+	// 尝试从保留期映射中找回之前的 IP 和域名
+	h.retentionMtx.Lock()
+	if oc, ok := h.retentionMap[c.clientID]; ok {
+		c.virtualIp = oc.virtualIp
+		c.hostname = oc.hostname
+		delete(h.retentionMap, c.clientID)
+		log.Printf("客户端重连成功，找回状态 - Virtual Ip: %s, Host Name: %s", c.virtualIp.String(), c.hostname)
+	} else {
+		c.virtualIp = h.getIp()
+		log.Println(dSnapshot.dnsMap)
+		c.hostname = util.UniqueHostName(string(gp.Payload[49:]), dSnapshot.dnsMap)
+		log.Printf("新客户端接入 - Virtual Ip: %s, Client ID: %x, Host Name: %s", c.virtualIp.String(), c.clientID, c.hostname)
+	}
+	h.retentionMtx.Unlock()
+
+	if c.virtualIp == nil {
+		return errors.New("无法分配虚拟 IP")
+	}
 
 	c.hub.addClient(c)
 	c.hub.addDns(c.hostname, c.virtualIp)
@@ -205,12 +223,8 @@ func (h *Hub) serverWS(ctx context.Context, w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	ip := h.getIp()
-	if ip == nil {
-		log.Println("无法为新连接分配虚拟 IP")
-		return
-	}
-	client := newClient(h, conn, netip.AddrPort{}, ip)
+	// 连接初期不分配 IP，由握手阶段决定
+	client := newClient(h, conn, netip.AddrPort{}, nil)
 	newCtx, cancel := context.WithCancel(ctx)
 
 	// 启动该用户的读写逻辑
@@ -219,13 +233,22 @@ func (h *Hub) serverWS(ctx context.Context, w http.ResponseWriter, r *http.Reque
 
 	select {
 	case <-newCtx.Done():
-		log.Printf("客户端断开连接: %s\n", client.virtualIp.String())
-		// 回收 IP 和清理状态
-		h.releaseIp(client.virtualIp)
-		h.removeClient(client)
-		h.removeDns(client.hostname)
+		if client.virtualIp != nil {
+			log.Printf("客户端断开连接，进入保留期: %s\n", client.virtualIp.String())
+			// 存入保留映射表，不立即释放 IP 和 DNS
+			h.retentionMtx.Lock()
+			h.retentionMap[client.clientID] = &offlineClient{
+				virtualIp: client.virtualIp,
+				hostname:  client.hostname,
+				expiry:    time.Now().Add(config.RetentionTime),
+			}
+			h.retentionMtx.Unlock()
 
-		h.tm.RemoveA(util.IpToKey(client.virtualIp))
+			// 仅移除路由，停止转发
+			h.removeClient(client)
+		} else {
+			log.Println("未完成握手的客户端断开连接")
+		}
 		return
 	}
 }

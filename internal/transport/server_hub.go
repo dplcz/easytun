@@ -7,8 +7,10 @@ import (
 	"easytun/internal/protocol"
 	"easytun/internal/stun"
 	"easytun/internal/util"
+	"log"
 	"net"
 	"sync"
+	"time"
 )
 
 // NewHub 创建并初始化一个新的 Hub 实例
@@ -33,6 +35,7 @@ func NewHub() *Hub {
 		tm:           stun.NewTunnelManager(),
 		ipMtx:        sync.Mutex{},
 		freeIps:      freeIps,
+		retentionMap: make(map[[16]byte]*offlineClient),
 		Subnet:       subnet,
 		bufPool:      &sync.Pool{New: func() interface{} { return make([]byte, 2048) }},
 		tpPool:       &sync.Pool{New: func() interface{} { return &transferPacket{gp: &protocol.GamePacket{}} }},
@@ -158,4 +161,29 @@ func (h *Hub) releaseIp(ip net.IP) {
 
 	// 回收到栈中
 	h.freeIps = append(h.freeIps, v4[3])
+}
+
+// cleanRetention 定期清理超过保留期的离线客户端状态
+func (h *Hub) cleanRetention(ctx context.Context) {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			now := time.Now()
+			h.retentionMtx.Lock()
+			for cid, oc := range h.retentionMap {
+				if now.After(oc.expiry) {
+					log.Printf("释放资源 - IP: %s, Hostname: %s\n", oc.virtualIp.String(), oc.hostname)
+					h.releaseIp(oc.virtualIp)
+					h.removeDns(oc.hostname)
+					delete(h.retentionMap, cid)
+				}
+			}
+			h.retentionMtx.Unlock()
+		case <-ctx.Done():
+			return
+		}
+	}
 }

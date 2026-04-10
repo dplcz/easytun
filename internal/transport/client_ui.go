@@ -15,7 +15,7 @@ import (
 
 // initUi 在终端界面显示客户端的基础运行信息
 func (t *ClientTransport) initUi() {
-	t.board.AddInfo("Name", config.DeviceName, nil)
+	//t.board.AddInfo("Name", config.DeviceName, nil)
 	t.board.AddInfo("Receiver Count", strconv.Itoa(config.RecvWorkers), pterm.LightCyan)
 	t.board.AddInfo("Sender Count", strconv.Itoa(config.SendWorkers), pterm.LightCyan)
 	if config.EnableP2P {
