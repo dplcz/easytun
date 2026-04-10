@@ -25,6 +25,7 @@ __pycache__/
 *.so
 
 config.toml.example
+.client_id
 
 # Distribution / packaging
 .Python

@@ -36,6 +36,7 @@ type Board struct {
 	recvCounter *uint64
 	sendBytes   *uint64
 	recvBytes   *uint64
+	hostname    string
 	localIp     atomic.Value
 	info        atomic.Value
 }
@@ -69,6 +70,10 @@ func NewBoard(status *uint32, sendCounter, recvCounter, sendBytes, recvBytes *ui
 
 func (b *Board) InitLocalIp(localIp [4]byte) {
 	b.localIp.Store(localIp)
+}
+
+func (b *Board) InitHostName(hostname string) {
+	b.hostname = hostname
 }
 
 func (b *Board) generateBar(sendHistory, recvHistory []int) (string, string) {
@@ -105,6 +110,7 @@ func (b *Board) generateBar(sendHistory, recvHistory []int) (string, string) {
 
 func (b *Board) generateInfo() string {
 	baseStr := pterm.LightCyan("Virtual Ip: ") + fmt.Sprintf("%v\n", b.localIp.Load().([4]byte))
+	baseStr = baseStr + pterm.LightCyan("Host Name: ") + fmt.Sprintf("%s\n", b.hostname)
 	infoSnapShot := b.info.Load().(*InfoSnapshot)
 	for _, info := range infoSnapShot.infos {
 		if info.colorFunc != nil {

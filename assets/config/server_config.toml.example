@@ -8,7 +8,8 @@ check_port = 10012
 
 [device]
 # 默认设备标识
-device_name = "default"
+device_name = "default
+retention_time = "5m"
 
 [performance]
 # 服务端读超时时间
