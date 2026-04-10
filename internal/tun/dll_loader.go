@@ -1,4 +1,4 @@
-//go:build client
+//go:build client && windows
 
 package tun
 

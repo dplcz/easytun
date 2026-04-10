@@ -11,27 +11,28 @@ SERVER_TAGS  := server
 DOCKER_IMAGE := easytun-server
 
 # --- 客户端配置 ---
-CLIENT_BIN   := $(DIST_DIR)/easytun.exe
-CLIENT_DIR   := ./cmd/client
-CLIENT_TAGS  := client
-MANIFEST     := ./scripts/app.manifest
-ICON         := ./assets/app.ico
-SYSO_TARGET  := $(CLIENT_DIR)/resource.syso
+CLIENT_BIN       := $(DIST_DIR)/easytun.exe
+CLIENT_LINUX_BIN := $(DIST_DIR)/easytun-linux
+CLIENT_DIR       := ./cmd/client
+CLIENT_TAGS      := client
+MANIFEST         := ./scripts/app.manifest
+ICON             := ./assets/app.ico
+SYSO_TARGET      := $(CLIENT_DIR)/resource.syso
 
 # ==========================================
 # 核心目标
 # ==========================================
 
-.PHONY: all server client docker clean
+.PHONY: all server client client-linux docker clean
 
-# 默认构建所有二进制文件（不包含 Docker 推送）
-all: server client
+# 默认构建所有二进制文件
+all: server client client-linux
 
 # ==========================================
 # 1. 构建 Linux 服务端二进制
 # ==========================================
 server:
-	@echo "==> [1/3] 正在编译服务端 (Target: linux/amd64)..."
+	@echo "==> [1/4] 正在编译服务端 (Target: linux/amd64)..."
 	@mkdir -p $(DIST_DIR)
 	@rm -f $(SERVER_BIN)
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -tags $(SERVER_TAGS) -ldflags "-s -w" -o $(SERVER_BIN) $(SERVER_MAIN)
@@ -41,7 +42,7 @@ server:
 # 2. 构建并推送 Docker 镜像 (依赖 server 构建)
 # ==========================================
 docker: server
-	@echo "==> [2/3] 正在构建 Docker 基础镜像 (latest)..."
+	@echo "==> [2/4] 正在构建 Docker 基础镜像 (latest)..."
 	docker build -t $(DOCKER_IMAGE):latest .
 
 	@echo "==> 计算新版本号..."
@@ -65,7 +66,7 @@ docker: server
 # 3. 构建 Windows 客户端二进制 (包含图标和 UAC 提权声明)
 # ==========================================
 client:
-	@echo "==> [3/3] 正在准备客户端资源文件..."
+	@echo "==> [3/4] 正在准备客户端资源文件..."
 	@if ! command -v rsrc >/dev/null 2>&1; then \
 		echo "    - 未检测到 rsrc，正在安装..."; \
 		go install github.com/akavel/rsrc@latest; \
@@ -83,7 +84,17 @@ client:
 	@echo "==> 客户端编译完成: $(CLIENT_BIN)"
 
 # ==========================================
-# 4. 清理构建产物
+# 4. 构建 Linux 客户端二进制
+# ==========================================
+client-linux:
+	@echo "==> [4/4] 正在编译 Linux 客户端 (Target: linux/amd64)..."
+	@mkdir -p $(DIST_DIR)
+	@rm -f $(CLIENT_LINUX_BIN)
+	GOOS=linux GOARCH=amd64 go build -tags $(CLIENT_TAGS) -ldflags "-s -w" -o $(CLIENT_LINUX_BIN) $(CLIENT_DIR)
+	@echo "==> Linux 客户端编译完成: $(CLIENT_LINUX_BIN)"
+
+# ==========================================
+# 5. 清理构建产物
 # ==========================================
 clean:
 	@echo "==> 正在清理所有构建产物..."

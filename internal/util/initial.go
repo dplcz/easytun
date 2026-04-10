@@ -5,9 +5,7 @@ package util
 import (
 	"bufio"
 	"easytun/internal/config"
-	"easytun/internal/tun"
 	"fmt"
-	"log"
 	"os"
 	"runtime/debug"
 )
@@ -25,8 +23,4 @@ func InitAll(localPath string) {
 		}
 	}()
 	config.InitConfig(localPath)
-	err := tun.InitWintunDLL()
-	if err != nil {
-		log.Fatal(err)
-	}
 }

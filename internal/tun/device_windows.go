@@ -1,4 +1,4 @@
-//go:build client
+//go:build client && windows
 
 package tun
 
@@ -53,7 +53,10 @@ func NewTun(name, domain string, ipByte []byte, toNet, fromNet chan []byte, bufP
 		IP:   ip.Mask(mask),
 		Mask: mask,
 	}
-
+	err := InitWintunDLL()
+	if err != nil {
+		log.Fatal(err)
+	}
 	adapter, err := wintun.CreateAdapter(name, "Wintun", nil)
 	if err != nil {
 		panic(fmt.Sprintf("Failed to create Wintun adapter: %v", err))

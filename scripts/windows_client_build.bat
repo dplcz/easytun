@@ -12,6 +12,10 @@ pushd "%SCRIPT_DIR%.."
 set PROJECT_ROOT=%cd%
 popd
 
+set GOOS=windows
+set GOARCH=amd64
+set CGO_ENABLED=0
+
 :: 定义各个关键文件的绝对路径
 set CLIENT_DIR=%PROJECT_ROOT%\cmd\client
 set DIST_DIR=%PROJECT_ROOT%\dist
