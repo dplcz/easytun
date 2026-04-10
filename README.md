@@ -32,7 +32,7 @@ English | [中文](README_zh.md)
     *   **Hardened Security**: Session establishment via Noise IK protocol; data plane fully encrypted and authenticated using ChaCha20-Poly1305.
     *   **Intelligent Traversal**: Experimental P2P hole punching (cone + symmetric NAT prediction) with seamless transition between relay and direct modes.
 *   **Observability**:
-    *   **Real-time Monitoring**: Optional terminal UI panel showing connection status, virtual IP, hostname, real-time throughput (Bytes), and system load.
+    *   **Real-time Monitoring**: Terminal UI panel showing connection status, virtual IP, hostname, real-time throughput (Bytes), and system load.
     *   **Deep Diagnostics**: Built-in pprof endpoint on the server for performance profiling and bottleneck identification.
 
 ## 🧱 Project Structure
