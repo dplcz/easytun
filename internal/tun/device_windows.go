@@ -216,7 +216,7 @@ func (t *Tun) tunSend(ctx context.Context, headerLength int) {
 				for len(payloadBatch) < batchSize {
 					select {
 					case extraPacket := <-t.fromNet:
-						if len(payload) > headerLength {
+						if len(extraPacket) > headerLength {
 							payloadBatch = append(payloadBatch, extraPacket)
 						}
 					default:
