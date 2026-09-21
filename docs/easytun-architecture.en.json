@@ -1,0 +1,677 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "EasyTun Client / Server Interaction Architecture (Staged by Data-Flow State)",
+    "locale": "en",
+    "quality_profile": "showcase",
+    "output": "easytun-architecture.en.html",
+    "viewBox": [
+      1260,
+      1110
+    ],
+    "repository": {
+      "url": "https://github.com/dplcz/easytun",
+      "provider": "github",
+      "revision": "d972cf08ea3c5bf660114ac4bacda34c0e067b02"
+    },
+    "views": [
+      {
+        "id": "relay-path",
+        "label": "Relay data path",
+        "focus": [
+          "c_app",
+          "c_tun",
+          "c_codec",
+          "c_crypto",
+          "c_net",
+          "s_udp",
+          "s_transfer",
+          "s_write",
+          "c_peer"
+        ],
+        "note": "Full relay chain from L0 application traffic to the S6 batch writer."
+      },
+      {
+        "id": "control-plane",
+        "label": "Control plane & session",
+        "focus": [
+          "c_net",
+          "s_ws",
+          "s_hs",
+          "s_router",
+          "s_dns"
+        ],
+        "note": "WebSocket handshake, virtual IP assignment, and .et name resolution."
+      },
+      {
+        "id": "p2p-path",
+        "label": "P2P hole punching",
+        "focus": [
+          "s_transfer",
+          "s_p2p",
+          "s_ws",
+          "c_net",
+          "c_peer"
+        ],
+        "note": "Punch decision and signalling; the data plane bypasses the server once direct."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "c_app",
+      "type": "external",
+      "label": "L0 Application traffic",
+      "sublabel": "LAN / gaming / RDP / SSH",
+      "tag": "Client",
+      "pos": [
+        80,
+        130
+      ],
+      "size": [
+        190,
+        76
+      ]
+    },
+    {
+      "id": "c_tun",
+      "type": "frontend",
+      "label": "L1 Virtual NIC & channels",
+      "sublabel": "Wintun / TUN · FromTun·FromNet",
+      "pos": [
+        80,
+        285
+      ],
+      "size": [
+        190,
+        76
+      ],
+      "sources": [
+        {
+          "path": "internal/tun/device_windows.go",
+          "line": 47,
+          "label": "NewTun"
+        },
+        {
+          "path": "internal/tun/device_linux.go",
+          "line": 1,
+          "label": "Linux TUN"
+        }
+      ]
+    },
+    {
+      "id": "c_codec",
+      "type": "backend",
+      "label": "L2 Protocol codec",
+      "sublabel": "GamePacket framing · LZ4 probe",
+      "pos": [
+        80,
+        440
+      ],
+      "size": [
+        190,
+        76
+      ],
+      "sources": [
+        {
+          "path": "internal/protocol/packet.go",
+          "line": 161,
+          "label": "EncodePacket"
+        },
+        {
+          "path": "internal/protocol/compress.go",
+          "line": 14,
+          "label": "compress"
+        }
+      ]
+    },
+    {
+      "id": "c_crypto",
+      "type": "security",
+      "label": "L3 End-to-end encryption",
+      "sublabel": "Noise IK · ChaCha20-Poly1305",
+      "pos": [
+        80,
+        595
+      ],
+      "size": [
+        190,
+        76
+      ],
+      "sources": [
+        {
+          "path": "internal/protocol/noise.go",
+          "line": 132,
+          "label": "HandshakeInit"
+        },
+        {
+          "path": "internal/protocol/cipher.go",
+          "line": 71,
+          "label": "Encrypt"
+        }
+      ]
+    },
+    {
+      "id": "c_net",
+      "type": "backend",
+      "label": "L4 Transport endpoint",
+      "sublabel": "UDP data + WS control planes",
+      "pos": [
+        80,
+        750
+      ],
+      "size": [
+        190,
+        76
+      ],
+      "sources": [
+        {
+          "path": "internal/transport/client_udp.go",
+          "line": 21,
+          "label": "packetSend"
+        },
+        {
+          "path": "internal/transport/client_control.go",
+          "line": 20,
+          "label": "connectServer"
+        }
+      ]
+    },
+    {
+      "id": "c_peer",
+      "type": "frontend",
+      "label": "Peer client B",
+      "sublabel": "Same L0–L4 stack · writes to TUN",
+      "pos": [
+        80,
+        990
+      ],
+      "size": [
+        190,
+        76
+      ]
+    },
+    {
+      "id": "s_ws",
+      "type": "backend",
+      "label": "S1 Control-plane ingress",
+      "sublabel": "HTTP Upgrade /ws · read/writePump",
+      "tag": "Server",
+      "pos": [
+        560,
+        130
+      ],
+      "size": [
+        200,
+        76
+      ],
+      "sources": [
+        {
+          "path": "internal/transport/server_ws.go",
+          "line": 219,
+          "label": "serverWS"
+        }
+      ]
+    },
+    {
+      "id": "s_hs",
+      "type": "security",
+      "label": "S2 Handshake & session",
+      "sublabel": "Virtual IP · ClientID retention",
+      "pos": [
+        560,
+        285
+      ],
+      "size": [
+        200,
+        76
+      ],
+      "sources": [
+        {
+          "path": "internal/transport/server_ws.go",
+          "line": 126,
+          "label": "handleHandshake"
+        }
+      ]
+    },
+    {
+      "id": "s_udp",
+      "type": "backend",
+      "label": "S3 Data-plane ingress",
+      "sublabel": "ServerPort UDP · ReadBatch",
+      "pos": [
+        560,
+        440
+      ],
+      "size": [
+        200,
+        76
+      ],
+      "sources": [
+        {
+          "path": "internal/transport/server_udp.go",
+          "line": 23,
+          "label": "listenUdp"
+        }
+      ]
+    },
+    {
+      "id": "s_transfer",
+      "type": "backend",
+      "label": "S4 Relay routing",
+      "sublabel": "transferChan · snapshot lookup",
+      "pos": [
+        560,
+        595
+      ],
+      "size": [
+        200,
+        76
+      ],
+      "sources": [
+        {
+          "path": "internal/transport/server.go",
+          "line": 132,
+          "label": "transfer"
+        }
+      ]
+    },
+    {
+      "id": "s_router",
+      "type": "database",
+      "label": "Router snapshot",
+      "sublabel": "routerSnapshot · copy-on-write",
+      "pos": [
+        980,
+        285
+      ],
+      "size": [
+        200,
+        76
+      ],
+      "sources": [
+        {
+          "path": "internal/transport/server_hub.go",
+          "line": 81,
+          "label": "addClient"
+        }
+      ]
+    },
+    {
+      "id": "s_dns",
+      "type": "database",
+      "label": "Internal DNS",
+      "sublabel": "dnsMap snapshot · *.et A records",
+      "pos": [
+        980,
+        440
+      ],
+      "size": [
+        200,
+        76
+      ],
+      "sources": [
+        {
+          "path": "internal/transport/server_dns.go",
+          "line": 55,
+          "label": "buildDnsResponse"
+        }
+      ]
+    },
+    {
+      "id": "s_write",
+      "type": "backend",
+      "label": "S6 Batch writer",
+      "sublabel": "packetChan · WriteBatch",
+      "pos": [
+        980,
+        595
+      ],
+      "size": [
+        200,
+        76
+      ],
+      "sources": [
+        {
+          "path": "internal/transport/server_udp.go",
+          "line": 211,
+          "label": "writeUdpPacket"
+        }
+      ]
+    },
+    {
+      "id": "s_p2p",
+      "type": "cloud",
+      "label": "S5 P2P hole-punch subsystem",
+      "sublabel": "p2pTaskChan · TunnelManager",
+      "pos": [
+        560,
+        750
+      ],
+      "size": [
+        200,
+        76
+      ],
+      "sources": [
+        {
+          "path": "internal/transport/server_p2p.go",
+          "line": 53,
+          "label": "handleP2PTask"
+        },
+        {
+          "path": "internal/transport/server_udp.go",
+          "line": 153,
+          "label": "listenCheck"
+        },
+        {
+          "path": "internal/stun/server.go",
+          "line": 52,
+          "label": "TunnelManager"
+        }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Client host (Windows Wintun / Linux TUN)",
+      "wraps": [
+        "c_app",
+        "c_tun",
+        "c_codec",
+        "c_crypto",
+        "c_net"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "Server Linux host (Hub process)",
+      "wraps": [
+        "s_ws",
+        "s_hs",
+        "s_udp",
+        "s_transfer",
+        "s_router",
+        "s_dns",
+        "s_write",
+        "s_p2p"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "app-to-tun",
+      "from": "c_app",
+      "to": "c_tun",
+      "label": "IP packets routed in via 10.0.6.0/24",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        175,
+        245
+      ]
+    },
+    {
+      "id": "tun-to-codec",
+      "from": "c_tun",
+      "to": "c_codec",
+      "label": "Batched reads (32 packets / batch)",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        175,
+        400
+      ]
+    },
+    {
+      "id": "codec-to-crypto",
+      "from": "c_codec",
+      "to": "c_crypto",
+      "label": "Payloads > 128B probed for compression",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        175,
+        555
+      ]
+    },
+    {
+      "id": "crypto-to-net",
+      "from": "c_crypto",
+      "to": "c_net",
+      "label": "AEAD ciphertext frames",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        175,
+        710
+      ]
+    },
+    {
+      "id": "p2p-direct",
+      "from": "c_net",
+      "to": "c_peer",
+      "label": "Direct P2P tunnel (bypasses server once punched)",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        175,
+        910
+      ]
+    },
+    {
+      "id": "net-to-udp",
+      "from": "c_net",
+      "to": "s_udp",
+      "label": "Relay-mode UDP uplink",
+      "variant": "emphasis",
+      "fromSide": "right",
+      "toSide": "left",
+      "via": [
+        [
+          400,
+          788
+        ],
+        [
+          400,
+          478
+        ]
+      ],
+      "labelAt": [
+        400,
+        620
+      ]
+    },
+    {
+      "id": "net-to-ws",
+      "from": "c_net",
+      "to": "s_ws",
+      "label": "WebSocket control plane: handshake / keepalive / Noise key / P2P signals",
+      "variant": "security",
+      "fromSide": "left",
+      "toSide": "left",
+      "via": [
+        [
+          40,
+          788
+        ],
+        [
+          40,
+          55
+        ],
+        [
+          450,
+          55
+        ],
+        [
+          450,
+          168
+        ]
+      ],
+      "labelAt": [
+        245,
+        39
+      ]
+    },
+    {
+      "id": "ws-to-hs",
+      "from": "s_ws",
+      "to": "s_hs",
+      "label": "TypeHandshake + ClientID",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        660,
+        245
+      ]
+    },
+    {
+      "id": "hs-to-router",
+      "from": "s_hs",
+      "to": "s_router",
+      "label": "Register vip→Client snapshot",
+      "fromSide": "right",
+      "toSide": "left",
+      "labelAt": [
+        870,
+        307
+      ]
+    },
+    {
+      "id": "udp-to-dns",
+      "from": "s_udp",
+      "to": "s_dns",
+      "label": "TypeDnsRequest lookup",
+      "fromSide": "right",
+      "toSide": "left",
+      "labelAt": [
+        870,
+        462
+      ]
+    },
+    {
+      "id": "udp-to-transfer",
+      "from": "s_udp",
+      "to": "s_transfer",
+      "label": "TypeData into transferChan",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        660,
+        555
+      ]
+    },
+    {
+      "id": "dns-to-write",
+      "from": "s_dns",
+      "to": "s_write",
+      "label": "A-record reply enqueued",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        1080,
+        555
+      ]
+    },
+    {
+      "id": "transfer-to-write",
+      "from": "s_transfer",
+      "to": "s_write",
+      "label": "Dequeued from packetChan",
+      "fromSide": "right",
+      "toSide": "left",
+      "labelAt": [
+        870,
+        617
+      ]
+    },
+    {
+      "id": "transfer-to-p2p",
+      "from": "s_transfer",
+      "to": "s_p2p",
+      "label": "Punch task queued when ifEstablish passes",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        660,
+        710
+      ]
+    },
+    {
+      "id": "p2p-to-ws",
+      "from": "s_p2p",
+      "to": "c_net",
+      "label": "P2PCommand / P2PCheck sent over the WebSocket control plane",
+      "fromSide": "left",
+      "toSide": "right",
+      "labelAt": [
+        415,
+        864
+      ]
+    },
+    {
+      "id": "write-to-peer",
+      "from": "s_write",
+      "to": "c_peer",
+      "label": "WriteBatch to the peer public address",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "via": [
+        [
+          1080,
+          960
+        ],
+        [
+          175,
+          960
+        ]
+      ],
+      "labelAt": [
+        640,
+        944
+      ]
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Client stages (L0 → L4)",
+      "items": [
+        "L0 application traffic → L1 virtual NIC and lock-free channels",
+        "L2 GamePacket framing with LZ4 probe compression",
+        "L3 Noise IK session plus ChaCha20-Poly1305 encryption",
+        "L4 UDP data plane and WebSocket control plane side by side"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Server stages (S1 → S6)",
+      "items": [
+        "S1 control ingress → S2 handshake, virtual IP, and hostname.et registration",
+        "S3 ReadBatch receive → S4 relay routing → S6 WriteBatch send",
+        "S5 Check port absorbs refresh packets to predict symmetric-NAT ports"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Shared state (lock-free reads)",
+      "items": [
+        "routerSnapshot and dnsMap are copy-on-write atomic snapshots",
+        "TunnelManager tracks tunnel status and retry count (max 6)",
+        "IP pool and ClientID retention let a reconnect reclaim its address and name"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Two data-flow states",
+      "items": [
+        "Relay state: client → server UDP → relay routing → peer",
+        "Direct state: after a successful punch the data plane bypasses the server",
+        "Payloads stay end-to-end encrypted; the server holds no session keys"
+      ]
+    }
+  ]
+}

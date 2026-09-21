@@ -1,0 +1,677 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "EasyTun 客户端 / 服务端交互架构（按数据流通状态分级）",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "output": "easytun-architecture.html",
+    "viewBox": [
+      1260,
+      1110
+    ],
+    "repository": {
+      "url": "https://github.com/dplcz/easytun",
+      "provider": "github",
+      "revision": "d972cf08ea3c5bf660114ac4bacda34c0e067b02"
+    },
+    "views": [
+      {
+        "id": "relay-path",
+        "label": "中继数据通路",
+        "focus": [
+          "c_app",
+          "c_tun",
+          "c_codec",
+          "c_crypto",
+          "c_net",
+          "s_udp",
+          "s_transfer",
+          "s_write",
+          "c_peer"
+        ],
+        "note": "L0 应用流量到 S6 批量下发的完整中继链路。"
+      },
+      {
+        "id": "control-plane",
+        "label": "控制面与会话",
+        "focus": [
+          "c_net",
+          "s_ws",
+          "s_hs",
+          "s_router",
+          "s_dns"
+        ],
+        "note": "WebSocket 握手、虚拟 IP 分配与 .et 域名解析。"
+      },
+      {
+        "id": "p2p-path",
+        "label": "P2P 打洞与直连",
+        "focus": [
+          "s_transfer",
+          "s_p2p",
+          "s_ws",
+          "c_net",
+          "c_peer"
+        ],
+        "note": "打洞判定与信令下发，成功后数据面旁路服务端。"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "c_app",
+      "type": "external",
+      "label": "L0 应用流量",
+      "sublabel": "局域网 / 游戏 / RDP / SSH",
+      "tag": "客户端",
+      "pos": [
+        80,
+        130
+      ],
+      "size": [
+        190,
+        76
+      ]
+    },
+    {
+      "id": "c_tun",
+      "type": "frontend",
+      "label": "L1 虚拟网卡与通道",
+      "sublabel": "Wintun / TUN · FromTun·FromNet 通道",
+      "pos": [
+        80,
+        285
+      ],
+      "size": [
+        190,
+        76
+      ],
+      "sources": [
+        {
+          "path": "internal/tun/device_windows.go",
+          "line": 47,
+          "label": "NewTun"
+        },
+        {
+          "path": "internal/tun/device_linux.go",
+          "line": 1,
+          "label": "Linux TUN"
+        }
+      ]
+    },
+    {
+      "id": "c_codec",
+      "type": "backend",
+      "label": "L2 协议编解码",
+      "sublabel": "GamePacket 封装 · LZ4 探测压缩",
+      "pos": [
+        80,
+        440
+      ],
+      "size": [
+        190,
+        76
+      ],
+      "sources": [
+        {
+          "path": "internal/protocol/packet.go",
+          "line": 161,
+          "label": "EncodePacket"
+        },
+        {
+          "path": "internal/protocol/compress.go",
+          "line": 14,
+          "label": "compress"
+        }
+      ]
+    },
+    {
+      "id": "c_crypto",
+      "type": "security",
+      "label": "L3 端到端加密",
+      "sublabel": "Noise IK 会话 · ChaCha20-Poly1305",
+      "pos": [
+        80,
+        595
+      ],
+      "size": [
+        190,
+        76
+      ],
+      "sources": [
+        {
+          "path": "internal/protocol/noise.go",
+          "line": 132,
+          "label": "HandshakeInit"
+        },
+        {
+          "path": "internal/protocol/cipher.go",
+          "line": 71,
+          "label": "Encrypt"
+        }
+      ]
+    },
+    {
+      "id": "c_net",
+      "type": "backend",
+      "label": "L4 传输端点",
+      "sublabel": "UDP 数据面 + WS 控制面 · p2pRouter",
+      "pos": [
+        80,
+        750
+      ],
+      "size": [
+        190,
+        76
+      ],
+      "sources": [
+        {
+          "path": "internal/transport/client_udp.go",
+          "line": 21,
+          "label": "packetSend"
+        },
+        {
+          "path": "internal/transport/client_control.go",
+          "line": 20,
+          "label": "connectServer"
+        }
+      ]
+    },
+    {
+      "id": "c_peer",
+      "type": "frontend",
+      "label": "对端客户端 B",
+      "sublabel": "同构 L0–L4 栈 · 解密写回 TUN",
+      "pos": [
+        80,
+        990
+      ],
+      "size": [
+        190,
+        76
+      ]
+    },
+    {
+      "id": "s_ws",
+      "type": "backend",
+      "label": "S1 控制面接入",
+      "sublabel": "HTTP Upgrade /ws · read/writePump",
+      "tag": "服务端",
+      "pos": [
+        560,
+        130
+      ],
+      "size": [
+        200,
+        76
+      ],
+      "sources": [
+        {
+          "path": "internal/transport/server_ws.go",
+          "line": 219,
+          "label": "serverWS"
+        }
+      ]
+    },
+    {
+      "id": "s_hs",
+      "type": "security",
+      "label": "S2 握手与会话",
+      "sublabel": "分配虚拟 IP · ClientID 保留期复用",
+      "pos": [
+        560,
+        285
+      ],
+      "size": [
+        200,
+        76
+      ],
+      "sources": [
+        {
+          "path": "internal/transport/server_ws.go",
+          "line": 126,
+          "label": "handleHandshake"
+        }
+      ]
+    },
+    {
+      "id": "s_udp",
+      "type": "backend",
+      "label": "S3 数据面接入",
+      "sublabel": "ServerPort UDP · ReadBatch 批量收包",
+      "pos": [
+        560,
+        440
+      ],
+      "size": [
+        200,
+        76
+      ],
+      "sources": [
+        {
+          "path": "internal/transport/server_udp.go",
+          "line": 23,
+          "label": "listenUdp"
+        }
+      ]
+    },
+    {
+      "id": "s_transfer",
+      "type": "backend",
+      "label": "S4 中转路由",
+      "sublabel": "transferChan · 查快照分流 · 打洞判定",
+      "pos": [
+        560,
+        595
+      ],
+      "size": [
+        200,
+        76
+      ],
+      "sources": [
+        {
+          "path": "internal/transport/server.go",
+          "line": 132,
+          "label": "transfer"
+        }
+      ]
+    },
+    {
+      "id": "s_router",
+      "type": "database",
+      "label": "路由表快照",
+      "sublabel": "routerSnapshot · 写时复制原子读",
+      "pos": [
+        980,
+        285
+      ],
+      "size": [
+        200,
+        76
+      ],
+      "sources": [
+        {
+          "path": "internal/transport/server_hub.go",
+          "line": 81,
+          "label": "addClient"
+        }
+      ]
+    },
+    {
+      "id": "s_dns",
+      "type": "database",
+      "label": "内部 DNS",
+      "sublabel": "dnsMap 快照 · *.et A 记录应答",
+      "pos": [
+        980,
+        440
+      ],
+      "size": [
+        200,
+        76
+      ],
+      "sources": [
+        {
+          "path": "internal/transport/server_dns.go",
+          "line": 55,
+          "label": "buildDnsResponse"
+        }
+      ]
+    },
+    {
+      "id": "s_write",
+      "type": "backend",
+      "label": "S6 批量下发",
+      "sublabel": "packetChan · WriteBatch 单播 / 广播",
+      "pos": [
+        980,
+        595
+      ],
+      "size": [
+        200,
+        76
+      ],
+      "sources": [
+        {
+          "path": "internal/transport/server_udp.go",
+          "line": 211,
+          "label": "writeUdpPacket"
+        }
+      ]
+    },
+    {
+      "id": "s_p2p",
+      "type": "cloud",
+      "label": "S5 P2P 打洞子系统",
+      "sublabel": "p2pTaskChan · TunnelManager · CheckPort",
+      "pos": [
+        560,
+        750
+      ],
+      "size": [
+        200,
+        76
+      ],
+      "sources": [
+        {
+          "path": "internal/transport/server_p2p.go",
+          "line": 53,
+          "label": "handleP2PTask"
+        },
+        {
+          "path": "internal/transport/server_udp.go",
+          "line": 153,
+          "label": "listenCheck"
+        },
+        {
+          "path": "internal/stun/server.go",
+          "line": 52,
+          "label": "TunnelManager"
+        }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "客户端主机（Windows Wintun / Linux TUN）",
+      "wraps": [
+        "c_app",
+        "c_tun",
+        "c_codec",
+        "c_crypto",
+        "c_net"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "服务端 Linux 主机（Hub 进程）",
+      "wraps": [
+        "s_ws",
+        "s_hs",
+        "s_udp",
+        "s_transfer",
+        "s_router",
+        "s_dns",
+        "s_write",
+        "s_p2p"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "app-to-tun",
+      "from": "c_app",
+      "to": "c_tun",
+      "label": "IP 包经 10.0.6.0/24 路由入栈",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        175,
+        245
+      ]
+    },
+    {
+      "id": "tun-to-codec",
+      "from": "c_tun",
+      "to": "c_codec",
+      "label": "批量读包（32 包 / 批）",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        175,
+        400
+      ]
+    },
+    {
+      "id": "codec-to-crypto",
+      "from": "c_codec",
+      "to": "c_crypto",
+      "label": "载荷 > 128B 先探测压缩",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        175,
+        555
+      ]
+    },
+    {
+      "id": "crypto-to-net",
+      "from": "c_crypto",
+      "to": "c_net",
+      "label": "AEAD 密文帧",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        175,
+        710
+      ]
+    },
+    {
+      "id": "p2p-direct",
+      "from": "c_net",
+      "to": "c_peer",
+      "label": "P2P 直连隧道（打洞后旁路服务端）",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        175,
+        910
+      ]
+    },
+    {
+      "id": "net-to-udp",
+      "from": "c_net",
+      "to": "s_udp",
+      "label": "中继模式 UDP 上行",
+      "variant": "emphasis",
+      "fromSide": "right",
+      "toSide": "left",
+      "via": [
+        [
+          400,
+          788
+        ],
+        [
+          400,
+          478
+        ]
+      ],
+      "labelAt": [
+        400,
+        620
+      ]
+    },
+    {
+      "id": "net-to-ws",
+      "from": "c_net",
+      "to": "s_ws",
+      "label": "WebSocket 控制面：握手 / 心跳 / Noise 公钥 / P2P 信令",
+      "variant": "security",
+      "fromSide": "left",
+      "toSide": "left",
+      "via": [
+        [
+          40,
+          788
+        ],
+        [
+          40,
+          55
+        ],
+        [
+          450,
+          55
+        ],
+        [
+          450,
+          168
+        ]
+      ],
+      "labelAt": [
+        245,
+        39
+      ]
+    },
+    {
+      "id": "ws-to-hs",
+      "from": "s_ws",
+      "to": "s_hs",
+      "label": "TypeHandshake + ClientID",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        660,
+        245
+      ]
+    },
+    {
+      "id": "hs-to-router",
+      "from": "s_hs",
+      "to": "s_router",
+      "label": "注册 vip→Client 快照",
+      "fromSide": "right",
+      "toSide": "left",
+      "labelAt": [
+        870,
+        307
+      ]
+    },
+    {
+      "id": "udp-to-dns",
+      "from": "s_udp",
+      "to": "s_dns",
+      "label": "TypeDnsRequest 查询",
+      "fromSide": "right",
+      "toSide": "left",
+      "labelAt": [
+        870,
+        462
+      ]
+    },
+    {
+      "id": "udp-to-transfer",
+      "from": "s_udp",
+      "to": "s_transfer",
+      "label": "TypeData 入 transferChan",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        660,
+        555
+      ]
+    },
+    {
+      "id": "dns-to-write",
+      "from": "s_dns",
+      "to": "s_write",
+      "label": "A 记录应答入队",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        1080,
+        555
+      ]
+    },
+    {
+      "id": "transfer-to-write",
+      "from": "s_transfer",
+      "to": "s_write",
+      "label": "packetChan 出队",
+      "fromSide": "right",
+      "toSide": "left",
+      "labelAt": [
+        870,
+        617
+      ]
+    },
+    {
+      "id": "transfer-to-p2p",
+      "from": "s_transfer",
+      "to": "s_p2p",
+      "label": "ifEstablish 命中后投递打洞任务",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        660,
+        710
+      ]
+    },
+    {
+      "id": "p2p-to-ws",
+      "from": "s_p2p",
+      "to": "c_net",
+      "label": "经 WebSocket 控制面下发 P2PCommand / P2PCheck",
+      "fromSide": "left",
+      "toSide": "right",
+      "labelAt": [
+        415,
+        864
+      ]
+    },
+    {
+      "id": "write-to-peer",
+      "from": "s_write",
+      "to": "c_peer",
+      "label": "WriteBatch 下发到对端公网地址",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "via": [
+        [
+          1080,
+          960
+        ],
+        [
+          175,
+          960
+        ]
+      ],
+      "labelAt": [
+        640,
+        944
+      ]
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "客户端分级（L0 → L4）",
+      "items": [
+        "L0 应用流量 → L1 虚拟网卡与无锁通道",
+        "L2 GamePacket 封装与 LZ4 智能压缩",
+        "L3 Noise IK 会话 + ChaCha20-Poly1305 加密",
+        "L4 UDP 数据面与 WebSocket 控制面双通道"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "服务端分级（S1 → S6）",
+      "items": [
+        "S1 控制面接入 → S2 握手、虚拟 IP 与 hostname.et 登记",
+        "S3 ReadBatch 收包 → S4 中转路由 → S6 WriteBatch 下发",
+        "S5 Check 端口接收刷新包，辅助对称 NAT 端口预测"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "共享状态（无锁读）",
+      "items": [
+        "routerSnapshot 与 dnsMap 均为写时复制原子快照",
+        "TunnelManager 记录隧道状态与重试次数（上限 6 次）",
+        "IP 池与 ClientID 保留期支持断线重连后复用地址与域名"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "两种数据流通状态",
+      "items": [
+        "中继态：客户端 → 服务端 UDP → 中转 → 对端",
+        "直连态：打洞成功后数据面旁路服务端，控制面仍保持",
+        "载荷全程端到端加密，服务端不持有会话密钥"
+      ]
+    }
+  ]
+}
