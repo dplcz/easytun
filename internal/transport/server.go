@@ -138,14 +138,15 @@ func (h *Hub) transfer(ctx context.Context) {
 			src := tp.gp.SourceVirtualIp()
 			snapshot := h.router.Load().(*routerSnapshot)
 			srcIp := util.IpToKey(src)
-			srcClient, ok := snapshot.clientMap[srcIp]
-			if ok {
+			srcClient := snapshot.clientMap[srcIp]
+			if srcClient != nil {
 				srcClient.updateAddrCheck(tp.srcAddr)
 			}
 			switch {
-			case dst.Equal(net.IPv4bcast) || dst.To4()[3] == 255 || dst.IsMulticast():
-				// 处理广播/多播包
-				continue
+			case srcClient == nil:
+				// 源客户端未注册，丢弃
+			case dst.To4()[3] == 255 || dst.IsMulticast():
+				// 处理广播/多播包，目前丢弃
 			case h.Subnet.Contains(dst) && !dst.IsLoopback():
 				// 处理虚拟网段内的单播包
 				dstIp := util.IpToKey(dst.To4())
