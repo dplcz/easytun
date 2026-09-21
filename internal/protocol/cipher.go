@@ -63,9 +63,8 @@ func (c *Cipher) ready() {
 }
 
 func (cs *CipherState) GetNonce() uint64 {
-	val := atomic.LoadUint64(&cs.nonce)
-	atomic.AddUint64(&cs.nonce, 1)
-	return val
+	// TODO 将nonce改为atomic.Uint64
+	return atomic.AddUint64(&cs.nonce, 1) - 1
 }
 
 func (cs *CipherState) Encrypt(dst, nonce, payload, header []byte) []byte {
