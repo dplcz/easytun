@@ -18,6 +18,12 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # 真实配置文件被 .gitignore 忽略，但会被 go:embed 嵌入，CI 中用 example 生成
+      - name: Prepare embedded configs
+        run: |
+          cp assets/config/config.toml.example assets/config/config.toml
+          cp assets/config/server_config.toml.example assets/config/server_config.toml
+
       - name: Build Linux server
         run: make server
 
