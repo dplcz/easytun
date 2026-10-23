@@ -1,0 +1,43 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build Linux server
+        run: make server
+
+      - name: Build Windows client
+        run: |
+          export PATH="$PATH:$(go env GOPATH)/bin"
+          make client
+
+      - name: Package artifacts
+        run: |
+          cd dist
+          mv easytun-server "easytun-server-linux-amd64-${GITHUB_REF_NAME}"
+          mv easytun.exe "easytun-windows-amd64-${GITHUB_REF_NAME}.exe"
+          sha256sum easytun-* > SHA256SUMS.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/easytun-server-linux-amd64-*
+            dist/easytun-windows-amd64-*.exe
+            dist/SHA256SUMS.txt
