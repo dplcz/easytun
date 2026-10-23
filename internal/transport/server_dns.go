@@ -53,10 +53,16 @@ func (h *Hub) getDns(hostname, domain string) net.IP {
 }
 
 func (h *Hub) buildDnsResponse(r []byte) ([]byte, error) {
+	if len(r) < 2 {
+		return nil, errorcode.PacketTooShort
+	}
 	// TODO 注意是否是内存复用的
 	msg := &dns.Msg{Data: r[2:]}
 	if err := msg.Unpack(); err != nil {
 		return nil, err
+	}
+	if len(msg.Question) == 0 {
+		return nil, errorcode.ParseDNSError
 	}
 	msgResp := msg.Copy()
 	dnsutil.SetReply(msgResp, msg)

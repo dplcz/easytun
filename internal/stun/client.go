@@ -9,19 +9,26 @@ import (
 
 type P2PStatus struct {
 	DstNatType  uint8
-	DstAddr     *net.UDPAddr
+	dstAddr     atomic.Pointer[net.UDPAddr]
 	LastSeen    int64 // 最后一次收到对方 P2P 数据包的时间
 	Established atomic.Bool
-	//isActive uint32    // 原子操作：0 为中转，1 为直连
-	//probeCount int           // 连续丢失的心跳数
-	//rTT        time.Duration // 链路延迟
+}
+
+func (s *P2PStatus) SetDstAddr(addr *net.UDPAddr) {
+	s.dstAddr.Store(addr)
+}
+
+func (s *P2PStatus) GetDstAddr() *net.UDPAddr {
+	return s.dstAddr.Load()
 }
 
 func (s *P2PStatus) UpdateLastSeen(established bool) {
 	atomic.StoreInt64(&s.LastSeen, time.Now().Unix())
 	if s.Established.Load() == false && established {
 		log.Println("建立 p2p 连接成功...")
-		log.Println(s.DstAddr.String())
+		if addr := s.GetDstAddr(); addr != nil {
+			log.Println(addr.String())
+		}
 	}
 	s.Established.Store(established)
 }

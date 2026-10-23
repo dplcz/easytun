@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"easytun/internal/config"
+	"easytun/internal/errorcode"
 	"easytun/internal/protocol"
 	"easytun/internal/stun"
 	"easytun/internal/util"
@@ -107,8 +108,15 @@ func (c *Client) readPump(ctx context.Context, cancel context.CancelFunc) {
 				log.Println("解析控制消息失败:", err)
 				continue
 			}
+			if gp.PType != protocol.TypeHandshake && c.virtualIp == nil {
+				continue
+			}
 			if err := c.hub.HandleWSMessage(ctx, c, gp); err != nil {
 				log.Printf("处理消息类型 %d 失败: %v", gp.PType, err)
+				if gp.PType == protocol.TypeHandshake {
+					cancel()
+					return
+				}
 			}
 		}
 	}
@@ -124,6 +132,9 @@ func (h *Hub) registerDefaultWSHandlers() {
 
 // handleHandshake 处理客户端初始连接握手
 func (h *Hub) handleHandshake(ctx context.Context, c *Client, gp *protocol.GamePacket) error {
+	if len(gp.Payload) < 49 {
+		return errorcode.PacketTooShort
+	}
 	/*
 		TODO 实现DNS
 		BASE
@@ -233,6 +244,7 @@ func (h *Hub) serverWS(ctx context.Context, w http.ResponseWriter, r *http.Reque
 
 	select {
 	case <-newCtx.Done():
+		conn.Close()
 		if client.virtualIp != nil {
 			log.Printf("客户端断开连接，进入保留期: %s\n", client.virtualIp.String())
 			// 存入保留映射表，不立即释放 IP 和 DNS

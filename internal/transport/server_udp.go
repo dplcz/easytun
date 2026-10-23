@@ -120,6 +120,9 @@ func (h *Hub) listenUdp(ctx context.Context) {
 				case h.packetChan <- p:
 				default:
 					log.Println("packet chan 已满，丢弃dns响应")
+					h.bufPool.Put(p.data[:0])
+					p.data = nil
+					h.packetPool.Put(p)
 				}
 				goto CleanUp
 			case protocol.TypeData:
@@ -197,7 +200,11 @@ func (h *Hub) listenCheck(ctx context.Context) {
 				dstClient, dstOk = snapShot.clientMap[dstVip]
 				if srcOk && dstOk {
 					log.Println("收到 P2P Check 信号:", addrPort)
-					dstClient.controlChan <- protocol.NewGamePacket(srcVip, dstVip, protocol.TypeP2PCommand, util.UDPAddrPortToBytes(addrPort, srcClient.natType))
+					select {
+					case dstClient.controlChan <- protocol.NewGamePacket(srcVip, dstVip, protocol.TypeP2PCommand, util.UDPAddrPortToBytes(addrPort, srcClient.natType)):
+					default:
+						log.Println("P2P Check: controlChan 已满，丢弃")
+					}
 				}
 			}
 		default:
@@ -256,9 +263,11 @@ func (h *Hub) writeUdpPacket(ctx context.Context) {
 				}
 			}
 			// 使用 WriteBatch 批量发送
-			_, err := h.PacketConn.WriteBatch(msgs, 0)
-			if err != nil {
-				log.Println("批量发送 UDP 错误:", err)
+			if len(msgs) > 0 {
+				_, err := h.PacketConn.WriteBatch(msgs, 0)
+				if err != nil {
+					log.Println("批量发送 UDP 错误:", err)
+				}
 			}
 			// 清理并放回对象池
 			for i, p := range packetBatch {

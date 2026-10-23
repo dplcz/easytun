@@ -157,6 +157,9 @@ func (h *Hub) transfer(ctx context.Context) {
 					if h.ifEstablish(srcIp, dstIp, srcClient.natType, client.natType) {
 						h.newP2PTask(ctx, srcIp, dstIp, tp.srcAddr, dstAddr)
 					}
+					if !dstAddr.IsValid() {
+						break
+					}
 					// 将数据包放入发送队列
 					p := h.packetPool.Get().(*packet)
 					p.data = tp.gp.RawData

@@ -28,7 +28,7 @@ func (t *ClientTransport) handleP2P(ctx context.Context) error {
 					continue
 				}
 				if status.Established.Load() {
-					_, err := t.dataConn.WriteToUDP(pingData, status.DstAddr)
+					_, err := t.dataConn.WriteToUDP(pingData, status.GetDstAddr())
 					if err != nil {
 						log.Println("P2P 心跳发送失败:", err)
 						continue
@@ -51,13 +51,14 @@ func (t *ClientTransport) handleP2P(ctx context.Context) error {
 func (t *ClientTransport) punch(data []byte, status *stun.P2PStatus) error {
 	switch status.DstNatType {
 	case stun.TypeCone:
-		_, err := t.dataConn.WriteToUDP(data, status.DstAddr)
+		_, err := t.dataConn.WriteToUDP(data, status.GetDstAddr())
 		if err != nil {
 			return err
 		}
 	case stun.TypeSymmetric:
-		dstIp := status.DstAddr.IP
-		dstPort := status.DstAddr.Port
+		dstAddr := status.GetDstAddr()
+		dstIp := dstAddr.IP
+		dstPort := dstAddr.Port
 		for i := -100; i < 200; i++ {
 			_, err := t.dataConn.WriteToUDP(data, &net.UDPAddr{IP: dstIp, Port: dstPort + i})
 			if err != nil {
@@ -96,7 +97,8 @@ func (t *ClientTransport) addP2P(vIp [4]byte, addr *net.UDPAddr, natType uint8) 
 	defer t.routerMtx.Unlock()
 	log.Println("尝试与 ", vIp, " 建立 p2p 连接")
 	oldSnapshot := t.p2pRouter.Load().(map[[4]byte]*stun.P2PStatus)
-	newP2P := &stun.P2PStatus{DstAddr: addr, LastSeen: time.Now().Unix(), DstNatType: natType}
+	newP2P := &stun.P2PStatus{LastSeen: time.Now().Unix(), DstNatType: natType}
+	newP2P.SetDstAddr(addr)
 	newMap := make(map[[4]byte]*stun.P2PStatus, len(oldSnapshot)+1)
 	for k, v := range oldSnapshot {
 		newMap[k] = v

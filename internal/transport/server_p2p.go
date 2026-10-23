@@ -79,6 +79,15 @@ func (h *Hub) handleP2PTask(ctx context.Context) {
 	}
 }
 
+// trySendControl 非阻塞地向客户端 controlChan 发送控制包
+func trySendControl(c *Client, gp *protocol.GamePacket) {
+	select {
+	case c.controlChan <- gp:
+	default:
+		log.Println("P2P controlChan 已满，丢弃指令")
+	}
+}
+
 // handleP2PCommand 根据双方的 NAT 类型，通过控制通道下发不同的打洞/端口预测指令
 func (h *Hub) handleP2PCommand(srcClient, dstClient *Client, task stun.P2PTask) {
 	srcAddr, _ := srcClient.dataAddr.Load().(netip.AddrPort)
@@ -87,20 +96,20 @@ func (h *Hub) handleP2PCommand(srcClient, dstClient *Client, task stun.P2PTask) 
 	// 如果一方是对称 NAT (Symmetric NAT)，需要另一方协助进行端口刷新和 Check
 	if srcClient.natType == stun.TypeSymmetric {
 		// 通知 srcClient 刷新端口 (发送 Check 包到 Hub)
-		srcClient.controlChan <- protocol.NewGamePacket(task.DstVip, task.SrcVip, protocol.TypeP2PCheck, nil)
+		trySendControl(srcClient, protocol.NewGamePacket(task.DstVip, task.SrcVip, protocol.TypeP2PCheck, nil))
 		// 通知 dstClient 向 srcClient 可能的地址发送打洞包
-		dstClient.controlChan <- protocol.NewGamePacket(task.SrcVip, task.DstVip, protocol.TypeP2PCommand, util.UDPAddrPortToBytes(srcAddr, srcClient.natType))
+		trySendControl(dstClient, protocol.NewGamePacket(task.SrcVip, task.DstVip, protocol.TypeP2PCommand, util.UDPAddrPortToBytes(srcAddr, srcClient.natType)))
 	}
 	if dstClient.natType == stun.TypeSymmetric {
-		dstClient.controlChan <- protocol.NewGamePacket(task.SrcVip, task.DstVip, protocol.TypeP2PCheck, nil)
-		srcClient.controlChan <- protocol.NewGamePacket(task.DstVip, task.SrcVip, protocol.TypeP2PCommand, util.UDPAddrPortToBytes(dstAddr, dstClient.natType))
+		trySendControl(dstClient, protocol.NewGamePacket(task.SrcVip, task.DstVip, protocol.TypeP2PCheck, nil))
+		trySendControl(srcClient, protocol.NewGamePacket(task.DstVip, task.SrcVip, protocol.TypeP2PCommand, util.UDPAddrPortToBytes(dstAddr, dstClient.natType)))
 	}
 
 	// 如果是对等圆锥型 NAT (Cone NAT)，直接下发对方的公网地址进行互打
 	if dstClient.natType == stun.TypeCone {
-		srcClient.controlChan <- protocol.NewGamePacket(task.DstVip, task.SrcVip, protocol.TypeP2PCommand, util.UDPAddrPortToBytes(dstAddr, dstClient.natType))
+		trySendControl(srcClient, protocol.NewGamePacket(task.DstVip, task.SrcVip, protocol.TypeP2PCommand, util.UDPAddrPortToBytes(dstAddr, dstClient.natType)))
 	}
 	if srcClient.natType == stun.TypeCone {
-		dstClient.controlChan <- protocol.NewGamePacket(task.SrcVip, task.DstVip, protocol.TypeP2PCommand, util.UDPAddrPortToBytes(srcAddr, srcClient.natType))
+		trySendControl(dstClient, protocol.NewGamePacket(task.SrcVip, task.DstVip, protocol.TypeP2PCommand, util.UDPAddrPortToBytes(srcAddr, srcClient.natType)))
 	}
 }
