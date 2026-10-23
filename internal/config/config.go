@@ -1,6 +1,7 @@
 package config
 
 import (
+	"crypto/rand"
 	"easytun/assets"
 	"log"
 	"os"
@@ -124,9 +125,8 @@ func InitConfig(localPath string) {
 	if fileData, err := os.ReadFile(cidPath); err == nil && len(fileData) == 16 {
 		copy(ClientID[:], fileData)
 	} else {
-		// 生成新的随机 ClientID
-		for i := 0; i < 16; i++ {
-			ClientID[i] = uint8(time.Now().UnixNano() % 256)
+		if _, err := rand.Read(ClientID[:]); err != nil {
+			panic("failed to generate random ClientID: " + err.Error())
 		}
 		_ = os.WriteFile(cidPath, ClientID[:], 0644)
 	}

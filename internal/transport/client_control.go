@@ -75,7 +75,11 @@ func (t *ClientTransport) heartbeat(ctx context.Context) error {
 	for {
 		select {
 		case <-timer.C:
-			t.ControlSendChan <- wsHeartbeatPacket
+			select {
+			case t.ControlSendChan <- wsHeartbeatPacket:
+			case <-ctx.Done():
+				return nil
+			}
 			if _, err := t.dataConn.WriteToUDP(udpHeartbeatBytes, t.serverAddr); err != nil {
 				return fmt.Errorf("UDP 心跳发送失败: %w", err)
 			}
@@ -118,6 +122,10 @@ func (t *ClientTransport) controlRecv(ctx context.Context) error {
 				}
 				switch gp.PType {
 				case protocol.TypeNoiseResponse:
+					if len(gp.Payload) < 32 {
+						log.Println("NoiseResponse payload too short")
+						continue
+					}
 					targetVip := gp.SourceVirtualIp()
 					remotePub := gp.Payload[:32]
 					pendingData := gp.Payload[32:]
@@ -126,6 +134,10 @@ func (t *ClientTransport) controlRecv(ctx context.Context) error {
 					log.Println("收到 check")
 					t.checkP2P(gp.SourceVirtualIp())
 				case protocol.TypeP2PCommand:
+					if len(gp.Payload) < 7 {
+						log.Println("P2PCommand payload too short")
+						continue
+					}
 					t.addP2P([4]byte(gp.SourceVirtualIp().To4()), util.BytesToIP(gp.Payload[:6]), gp.Payload[6])
 				default:
 					continue

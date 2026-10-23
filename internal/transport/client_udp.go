@@ -89,7 +89,7 @@ func (t *ClientTransport) packetSend(ctx context.Context) error {
 				if !ok {
 					n, err = t.dataConn.WriteToUDP(data, t.serverAddr)
 				} else if status.Established.Load() {
-					n, err = t.dataConn.WriteToUDP(data, status.DstAddr)
+					n, err = t.dataConn.WriteToUDP(data, status.GetDstAddr())
 				} else {
 					n, err = t.dataConn.WriteToUDP(data, t.serverAddr)
 				}
@@ -156,6 +156,7 @@ func (t *ClientTransport) packetRecv(ctx context.Context) error {
 						continue
 					}
 					if session == nil {
+						t.bufPool.Put(gp.RawData[:0])
 						continue
 					}
 					err = gp.DecryptParse(t.bufPool, session.Cipher.Recver)
@@ -179,7 +180,7 @@ func (t *ClientTransport) packetRecv(ctx context.Context) error {
 					srcVIp := util.IpToKey(gp.SourceVirtualIp())
 					status, ok := snapshot[srcVIp]
 					if ok {
-						status.DstAddr = addr
+						status.SetDstAddr(addr)
 					}
 					_, err = t.dataConn.WriteToUDP(pongBytes, addr)
 					t.bufPool.Put(gp.RawData[:0])
@@ -195,7 +196,7 @@ func (t *ClientTransport) packetRecv(ctx context.Context) error {
 						t.bufPool.Put(gp.RawData[:0])
 						continue
 					}
-					status.DstAddr = addr
+					status.SetDstAddr(addr)
 					status.UpdateLastSeen(true)
 					t.bufPool.Put(gp.RawData[:0])
 					controlGp := protocol.NewGamePacket(util.IpToKey(t.localIp), srcVIp, protocol.TypeP2PEstablished, nil)
@@ -211,6 +212,7 @@ func (t *ClientTransport) packetRecv(ctx context.Context) error {
 					if err != nil {
 						log.Println(err)
 						t.bufPool.Put(gp.RawData[:0])
+						continue
 					}
 					err = t.device.SendDNS(dnsBuf)
 					if err != nil {

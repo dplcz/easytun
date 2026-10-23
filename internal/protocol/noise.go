@@ -22,7 +22,8 @@ type NoiseSession struct {
 	lastSeen    int64
 	mtx         sync.Mutex
 
-	pendingChan chan []byte
+	pendingChan   chan []byte
+	pendingClosed atomic.Bool
 }
 
 func NewNoiseSession(remoteVip [4]byte, isInitiator bool, hs *noise.HandshakeState) *NoiseSession {
@@ -78,7 +79,15 @@ func (s *NoiseSession) SendAllPendingData(recv chan []byte) {
 	}
 }
 
+func (s *NoiseSession) closePending() {
+	s.pendingClosed.Store(true)
+	close(s.pendingChan)
+}
+
 func (s *NoiseSession) AddPendingData(data []byte) {
+	if s.pendingClosed.Load() {
+		return
+	}
 	select {
 	case s.pendingChan <- data:
 	default:
@@ -179,7 +188,7 @@ func (m *NoiseManager) HandleNoisePacket(srcVip [4]byte, data []byte) (*NoiseSes
 		}
 		session.Cipher.Init(csRecv.UnsafeKey(), csSend.UnsafeKey())
 		session.hs = nil
-		close(session.pendingChan)
+		session.closePending()
 		session.SendAllPendingData(m.tunChan)
 		return nil, nil, nil
 	}
@@ -204,7 +213,7 @@ func (m *NoiseManager) handleResponderFirst(srcVip [4]byte, data []byte) (*Noise
 	responseMsg, csSend, csRecv, _ := hs.WriteMessage(nil, nil)
 	session := NewNoiseSession(srcVip, false, nil)
 	session.Cipher.Init(csRecv.UnsafeKey(), csSend.UnsafeKey())
-	close(session.pendingChan)
+	session.closePending()
 	m.SetSession(srcVip, session)
 	session.SendAllPendingData(m.tunChan)
 	return session, responseMsg, nil

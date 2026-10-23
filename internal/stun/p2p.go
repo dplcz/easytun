@@ -26,6 +26,6 @@ func GetNatType() (uint8, error) {
 	case s.SymmetricNAT:
 		return TypeSymmetric, nil
 	default:
-		return 0, fmt.Errorf("unknown natType %d", natType)
+		return 0, fmt.Errorf("unknown natType %s", natType)
 	}
 }
