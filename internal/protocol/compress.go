@@ -12,8 +12,7 @@ var probeLen = lz4.CompressBlockBound(64)
 // Compress 尝试压缩数据。
 // 仅对大于 128 字节的数据进行压缩。
 func (g *GamePacket) compress(pool *sync.Pool) bool {
-	payloadLen := int(g.Length - 16)
-
+	payloadLen := len(g.Payload)
 	if payloadLen <= 128 {
 		return false
 	}
@@ -39,29 +38,32 @@ func (g *GamePacket) compress(pool *sync.Pool) bool {
 	dst = dst[:bound]
 
 	n, err = lz4.CompressBlock(g.Payload, dst, nil)
-	if err != nil || n >= payloadLen || n == 0 {
+	if err != nil || n >= payloadLen || n == 0 || n > MaxPayloadSize {
 		pool.Put(dst[:0])
 		return false
 	}
 	pool.Put(g.Payload[:0])
 	g.Payload = dst[:n]
-	g.Length = uint16(n + 16)
+	g.Length, _ = payloadLengthField(n)
 	return true
 }
 
 // Decompress 解压数据
 func (g *GamePacket) decompress(pool *sync.Pool) error {
 	dst := pool.Get().([]byte)
-	if cap(dst) < 2048 {
+	if cap(dst) < MaxPayloadSize {
 		pool.Put(dst[:0])
-		dst = make([]byte, 2048)
+		dst = make([]byte, MaxPayloadSize)
 	}
-	dst = dst[:cap(dst)]
+	dst = dst[:MaxPayloadSize]
 	defer pool.Put(dst[:0])
 
 	n, err := lz4.UncompressBlock(g.Payload, dst)
 	if err != nil {
 		return fmt.Errorf("LZ4 解压失败: %w", err)
+	}
+	if n == 0 || n > MaxPayloadSize {
+		return fmt.Errorf("LZ4 解压结果长度非法: %d", n)
 	}
 	reqLen := n + HeaderLength
 	if reqLen > cap(g.RawData) {
