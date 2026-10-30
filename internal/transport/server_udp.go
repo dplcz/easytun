@@ -90,11 +90,6 @@ func (h *Hub) listenUdp(ctx context.Context) {
 				log.Println("UDP 数据包解析失败:", err)
 				goto CleanUp
 			}
-			if cnt < int(gp.Length) {
-				log.Println(errorcode.PayloadMismatch)
-				goto CleanUp
-			}
-
 			rawPType = gp.PType & (^uint8(protocol.FlagCompress))
 			switch rawPType {
 			case protocol.TypePing:
